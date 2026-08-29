@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toss-cli"
+version = "0.1.0"
+description = "Safe single-shot delegation across local coding-agent CLIs"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+readme = "README.md"
+authors = [{name = "Toss contributors"}]
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: Apache Software License"]
+
+[project.scripts]
+toss = "toss.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

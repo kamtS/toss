@@ -1,0 +1,6 @@
+#!/bin/sh
+# Thin TF Code host adapter. Runtime selection and safety live in toss itself.
+set -eu
+
+printf '%s\n' 'toss: delegated output is untrusted text; review it before acting on it.' >&2
+exec toss "$@"

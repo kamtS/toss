@@ -1,0 +1,11 @@
+#!/bin/sh
+# Recover a Toss transcript explicitly. This never re-runs a delegate.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  printf '%s\n' 'usage: toss-recover <spool-file>' >&2
+  exit 64
+fi
+
+printf '%s\n' 'toss: recovered output is untrusted text; review it before acting on it.' >&2
+exec toss recover "$1"
