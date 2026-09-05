@@ -4,17 +4,26 @@ Thanks for helping keep Toss small and dependable.
 
 ## Development
 
-Use Python 3.11+ and run the complete local check before opening a pull
-request:
+Use Python 3.11+ and run the complete source-tree check before opening a pull
+request. Setting `PYTHONPATH` is required until the package is installed:
 
 ```sh
-python3 -m unittest discover -s tests -v
-python3 -m pip install .
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Keep core code in the standard library. Adapters are shell-thin and separately
-testable: they may warn and `exec toss "$@"`, but cannot choose a runtime or
-model, broaden authority, interpolate a shell command, or consume secrets.
+To exercise the installed console entry point in an isolated environment:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/toss --help
+```
+
+Keep core code in the standard library. `SKILL.md` interprets natural language
+and may coordinate independent calls, but runtime commands and authority checks
+belong to the canonical CLI. Shell adapters remain separately testable: they
+may warn and `exec toss "$@"`, but cannot broaden authority, interpolate a
+shell command, or consume secrets.
 
 ## Change principles
 

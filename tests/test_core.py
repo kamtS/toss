@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 import unittest
 from unittest.mock import patch
 
-from toss.cli import main
+from toss.cli import _review_prompt, main
 from toss.runner import TossRunError, recover, run
 from toss.runtimes import TossCapabilityError, command_for, get_runtime, validate_authority
 
@@ -30,9 +34,24 @@ class CoreTests(unittest.TestCase):
         )
 
     def test_unenforceable_authority_refuses(self):
-        for runtime, authority in [("tfcode", "ro"), ("tfcode", "write"), ("claude", "ro"), ("claude", "write")]:
+        for runtime, authority in [("tfcode", "ro"), ("tfcode", "write"), ("claude", "write")]:
             with self.assertRaises(TossCapabilityError):
                 validate_authority(get_runtime(runtime), authority)
+
+    def test_claude_ro_is_tool_free_safe_and_ephemeral(self):
+        command = command_for(get_runtime("claude"), authority="ro", model="fable", variant=None)
+        self.assertIn("--safe-mode", command)
+        self.assertIn("--no-session-persistence", command)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        self.assertNotIn("acceptEdits", command)
+
+    def test_models_are_honest_known_aliases_not_live_availability(self):
+        from toss.runtimes import models
+        rows = models()
+        self.assertIn({"runtime": "codex", "model": "gpt-6-astra", "provenance": "known-alias"}, rows)
+        self.assertIn({"runtime": "codex", "model": "gpt-5.6-sol", "provenance": "known-alias"}, rows)
+        self.assertEqual(models("tfcode"), [])
 
 
     def test_runner_preserves_stdout_and_uses_stdin(self):
@@ -63,6 +82,30 @@ class CoreTests(unittest.TestCase):
                 run(cmd, "x", runtime="fake", cwd=path, timeout=.05)
             self.assertTrue(raised.exception.partial_output)
             self.assertFalse(recover(raised.exception.spool)["complete"])
+
+    def test_timeout_covers_blocked_prompt_delivery(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            command = fake(root, "import time; time.sleep(10)")
+            started = time.monotonic()
+            with self.assertRaises(TossRunError) as raised:
+                run(command, "x" * 2_000_000, runtime="fake", cwd=root, timeout=.05)
+            self.assertLess(time.monotonic() - started, .75)
+            self.assertIn("timeout", raised.exception.stderr)
+
+    def test_descendant_holding_pipes_cannot_hang_runner(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            command = fake(
+                root,
+                "import subprocess, sys\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'])\n"
+                "print('parent complete', flush=True)\n",
+            )
+            started = time.monotonic()
+            output = run(command, "x", runtime="fake", cwd=root, timeout=.5)
+            self.assertLess(time.monotonic() - started, .75)
+            self.assertEqual(output, "parent complete\n")
 
 
     def test_recursion_guard(self):
@@ -103,6 +146,18 @@ class CoreTests(unittest.TestCase):
             )
             self.assertFalse(artifact.exists())
 
+    def test_codex_spool_is_complete_only_after_final_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            artifact = root / "missing-final.txt"
+            command = fake(root, "print('raw codex transcript')")
+            with self.assertRaises(TossRunError) as raised:
+                run(command, "x", runtime="codex", cwd=root, final_path=artifact)
+            saved = recover(raised.exception.spool)
+            self.assertFalse(saved["complete"])
+            self.assertEqual(saved["output"], "")
+            self.assertFalse(raised.exception.partial_output)
+
     def test_cli_requires_explicit_cwd_for_write(self):
         from io import StringIO
         with patch("sys.stderr", StringIO()) as stderr:
@@ -114,3 +169,195 @@ class CoreTests(unittest.TestCase):
             spool = Path(temporary) / "partial.json"
             spool.write_text(json.dumps({"complete": False, "output": "not done"}))
             self.assertEqual(main(["recover", str(spool)]), 1)
+
+    def test_missing_and_corrupt_recovery_are_structured(self):
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for spool in (root / "missing.json", root / "corrupt.json"):
+                if spool.name == "corrupt.json":
+                    spool.write_text("not json")
+                with patch("sys.stderr", StringIO()) as stderr:
+                    self.assertEqual(main(["recover", str(spool)]), 1)
+                    self.assertEqual(json.loads(stderr.getvalue())["error"], "recovery_failed")
+
+    def test_missing_runtime_binary_is_structured_and_has_spool(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            with self.assertRaises(TossRunError) as raised:
+                run(["/definitely/missing/toss-runtime"], "x", runtime="missing", cwd=temporary)
+            self.assertIn("launch failed", raised.exception.stderr)
+            self.assertFalse(recover(raised.exception.spool)["complete"])
+
+    def test_spool_locator_is_available_before_delegate_launch(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            reported: list[Path] = []
+            with self.assertRaises(TossRunError):
+                run(
+                    ["/definitely/missing/toss-runtime"], "x", runtime="missing",
+                    cwd=temporary, on_spool=reported.append,
+                )
+            self.assertEqual(len(reported), 1)
+            self.assertFalse(recover(reported[0])["complete"])
+
+    def test_short_flushed_output_updates_spool_during_run(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            command = fake(root, "import time; print('partial', flush=True); time.sleep(.7); print('done')")
+            reported: list[Path] = []
+            result: list[str] = []
+            worker = threading.Thread(
+                target=lambda: result.append(run(
+                    command, "x", runtime="fake", cwd=root, timeout=2,
+                    on_spool=reported.append,
+                )),
+            )
+            worker.start()
+            deadline = time.monotonic() + .5
+            while not reported and time.monotonic() < deadline:
+                time.sleep(.005)
+            self.assertTrue(reported)
+            time.sleep(.15)
+            saved = recover(reported[0])
+            self.assertFalse(saved["complete"])
+            self.assertEqual(saved["output"], "partial\n")
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result, ["partial\ndone\n"])
+
+    def test_timeout_spool_does_not_duplicate_output(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            command = fake(root, "import time; print('once', flush=True); time.sleep(10)")
+            with self.assertRaises(TossRunError) as raised:
+                run(command, "x", runtime="fake", cwd=root, timeout=.05)
+            self.assertEqual(recover(raised.exception.spool)["output"], "once\n")
+
+    def test_oversized_output_is_partial_and_explicit_not_silently_truncated(self):
+        import toss.runner as runner
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}), patch.object(runner, "MAX_SPOOL", 16), patch.object(runner, "MAX_FINAL", 16):
+            root = Path(temporary)
+            command = fake(root, "print('x' * 100)")
+            with self.assertRaises(TossRunError) as raised:
+                run(command, "x", runtime="fake", cwd=root)
+            saved = recover(raised.exception.spool)
+            self.assertFalse(saved["complete"])
+            self.assertTrue(saved["truncated"])
+            self.assertGreater(saved["output_bytes"], len(saved["output"]))
+            self.assertIn("exceeds", raised.exception.stderr)
+
+    def test_signal_is_forwarded_to_process_group_and_partial_is_spooled(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"TOSS_STATE_DIR": temporary}):
+            root = Path(temporary)
+            command = fake(
+                root,
+                "import signal, time\n"
+                "signal.signal(signal.SIGTERM, lambda *_: None)\n"
+                "print('partial', flush=True)\n"
+                "time.sleep(10)\n",
+            )
+            timer = threading.Timer(.15, lambda: os.kill(os.getpid(), signal.SIGTERM))
+            timer.start()
+            started = time.monotonic()
+            try:
+                with self.assertRaises(TossRunError) as raised:
+                    run(command, "x", runtime="fake", cwd=root, timeout=10)
+            finally:
+                timer.cancel()
+            self.assertLess(time.monotonic() - started, 2.5)
+            self.assertIn("interrupted by signal", raised.exception.stderr)
+            self.assertEqual(recover(raised.exception.spool)["output"], "partial\n")
+
+    def test_review_working_tree_includes_staged_unstaged_and_untracked_text(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "staged.txt").write_text("old staged\n")
+            (root / "unstaged.txt").write_text("old unstaged\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+            (root / "staged.txt").write_text("new staged\n")
+            subprocess.run(["git", "add", "staged.txt"], cwd=root, check=True)
+            (root / "unstaged.txt").write_text("new unstaged\n")
+            (root / "untracked.txt").write_text("new untracked\n")
+            prompt, scope = _review_prompt(argparse.Namespace(cwd=root, base="HEAD", scope="auto"))
+            self.assertEqual(scope, "working-tree")
+            self.assertIn("new staged", prompt)
+            self.assertIn("new unstaged", prompt)
+            self.assertIn("new untracked", prompt)
+
+    def test_review_auto_uses_branch_when_clean_and_branch_excludes_dirty_files(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("base\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+            base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            (root / "tracked.txt").write_text("committed\n")
+            subprocess.run(["git", "commit", "-qam", "change"], cwd=root, check=True)
+            prompt, scope = _review_prompt(argparse.Namespace(cwd=root, base=base, scope="auto"))
+            self.assertEqual(scope, "branch")
+            self.assertIn("committed", prompt)
+            (root / "tracked.txt").write_text("dirty must stay out\n")
+            (root / "untracked.txt").write_text("untracked must stay out\n")
+            prompt, scope = _review_prompt(argparse.Namespace(cwd=root, base=base, scope="branch"))
+            self.assertEqual(scope, "branch")
+            self.assertNotIn("dirty must stay out", prompt)
+            self.assertNotIn("untracked must stay out", prompt)
+
+    def test_clean_default_head_review_fails_closed_instead_of_launching_empty_review(self):
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as temporary, patch("toss.cli.run") as delegate:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("clean\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=root, check=True)
+            with patch("sys.stderr", StringIO()) as stderr:
+                self.assertEqual(main(["review", "codex", "--cwd", str(root)]), 2)
+            delegate.assert_not_called()
+            self.assertIn("has no changes", stderr.getvalue())
+
+    def test_review_base_is_option_safe_and_fails_closed_without_launch(self):
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as temporary, patch("toss.cli.run") as delegate:
+            root = Path(temporary)
+            unexpected = root / "unexpected-output"
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            with patch("sys.stderr", StringIO()) as stderr:
+                result = main(["review", "codex", "--cwd", str(root), f"--base=--output={unexpected}", "--scope", "working-tree"])
+            self.assertEqual(result, 2)
+            self.assertFalse(unexpected.exists())
+            delegate.assert_not_called()
+            self.assertIn("invalid review base", stderr.getvalue())
+
+    def test_review_refuses_write_before_delegate(self):
+        with tempfile.TemporaryDirectory() as temporary, patch("toss.cli.run") as delegate:
+            self.assertEqual(main(["review", "codex", "--write", "--cwd", temporary]), 2)
+            delegate.assert_not_called()
+
+    def test_resolved_diagnostics_go_only_to_stderr(self):
+        from io import StringIO
+        import toss.cli as cli
+        with patch.object(cli, "command_for", lambda *a, **k: ["ignored"]), patch.object(cli, "run", lambda *a, **k: "final\n"), patch("sys.stdout", StringIO()) as stdout, patch("sys.stderr", StringIO()) as stderr:
+            self.assertEqual(main(["to", "claude", "--", "hi"]), 0)
+            self.assertEqual(stdout.getvalue(), "final\n")
+            diagnostic = json.loads(stderr.getvalue())
+            self.assertEqual(diagnostic["runtime"], "claude")
+            self.assertIn("cwd", diagnostic)
+
+    def test_review_diagnostic_reports_resolved_scope_on_stderr(self):
+        from io import StringIO
+        import toss.cli as cli
+        with patch.object(cli, "_review_prompt", return_value=("review input", "working-tree")), patch.object(cli, "command_for", lambda *a, **k: ["ignored"]), patch.object(cli, "run", lambda *a, **k: "final\n"), patch("sys.stdout", StringIO()) as stdout, patch("sys.stderr", StringIO()) as stderr:
+            self.assertEqual(main(["review", "claude"]), 0)
+            self.assertEqual(stdout.getvalue(), "final\n")
+            self.assertEqual(json.loads(stderr.getvalue())["scope"], "working-tree")

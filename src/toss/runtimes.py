@@ -26,11 +26,10 @@ class Runtime:
 
 
 RUNTIMES: dict[str, Runtime] = {
-    "codex": Runtime("codex", "codex", True, True),
-    # Claude's plan mode is useful, but is not a filesystem security boundary.
-    # Claude's plan mode is not OS-level isolation and its write modes need
-    # their own noninteractive contract.  Keep both authorities closed in v1.
-    "claude": Runtime("claude", "claude", False, False, ("sonnet", "opus", "fable")),
+    "codex": Runtime("codex", "codex", True, True, ("gpt-6-astra", "gpt-5.6-sol")),
+    # Claude read-only delegation is deliberately tool-free.  It can review
+    # context supplied in the prompt, but cannot inspect or mutate the checkout.
+    "claude": Runtime("claude", "claude", True, False, ("sonnet", "opus", "fable")),
     # TF Code has no proven non-interactive enforced RO mode.  Do not guess.
     "tfcode": Runtime("tfcode", "tfcode", False, False),
 }
@@ -76,7 +75,10 @@ def command_for(
         # Codex treats a lone dash as prompt text supplied over stdin.
         cmd.append("-")
     elif runtime.name == "claude":
-        cmd += ["-p", "--output-format", "text", "--no-session-persistence", "--permission-mode", "acceptEdits"]
+        cmd += [
+            "-p", "--output-format", "text", "--no-session-persistence",
+            "--safe-mode", "--tools", "", "--permission-mode", "dontAsk",
+        ]
         if model:
             cmd += ["--model", model]
     elif runtime.name == "tfcode":
@@ -97,6 +99,8 @@ def doctor(timeout: float = 3.0) -> list[dict[str, object]]:
             "installed": bool(path),
             "read_only_enforced": runtime.supports_ro,
             "write_supported": runtime.supports_write,
+            "authentication": "not_checked",
+            "model_discovery": "static_aliases" if runtime.known_models else "unavailable",
         }
         if path:
             try:
