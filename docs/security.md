@@ -5,9 +5,10 @@ authority expansion; it does not make an arbitrary downstream tool safe.
 
 ## Threat model and non-goals
 
-Toss assumes a person explicitly chooses a local runtime and supplies a
-request. It never supplies a default runtime or model. Its job is to keep that
-request foreground-only, pass arguments without shell
+Toss assumes a person explicitly requests delegation and supplies a request.
+The CLI never supplies a default runtime or model. The Agent Skill resolves an
+explicitly named target, or discloses Codex read-only when the person says only
+“toss this.” Its job is to keep each request foreground-only, pass arguments without shell
 interpolation, preserve the configured runtime safety mode, and make recovery
 explicit.
 
@@ -22,16 +23,25 @@ Toss does not:
 
 ## Runtime policy
 
-Every delegation requires an explicit runtime, for example `toss to codex` or
-`toss review claude`. Only non-delegating inspection commands such as `doctor`
-and `models` work without a target. The normal safe path is `codex --ro`.
+Every CLI delegation requires an explicit runtime, for example `toss to codex`
+or `toss review claude`. Only non-delegating inspection commands such as
+`doctor` and `models` work without a target. The normal safe path is
+`codex --ro`.
 `codex --write` is allowed only with explicit `--cwd`; it does not bypass the
-runtime's own approval policy. TF Code has no verified noninteractive read-only
-mode. `toss to tfcode --ro` must refuse, and `--write` is unsupported in v1. A
+runtime's own approval policy. Claude read-only runs with `--safe-mode`, an
+empty tool set, `dontAsk`, and no session persistence; it can assess supplied
+text but cannot inspect the checkout with tools. TF Code has no verified
+noninteractive read-only mode. `toss to tfcode --ro` must refuse, and `--write`
+is unsupported in v1. A
 future runtime is not added by renaming an adapter: it needs an explicit, tested
 authority model.
 
 ## Adapters
+
+`SKILL.md` is the agent-facing adapter. It may interpret natural language and
+coordinate several independent CLI calls, but it cannot weaken a runtime
+refusal, silently grant write authority, merge one delegate's text into
+another's result, or execute returned instructions.
 
 `toss-claude`, `toss-codex`, and `toss-tfcode` are convenience launchers only.
 They print an output-injection warning on stderr and execute `toss "$@"`.
