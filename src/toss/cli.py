@@ -11,7 +11,10 @@ import sys
 import uuid
 
 from .runner import TossRecoveryError, TossRunError, recover, run, state_dir
-from .runtimes import TossCapabilityError, command_for, doctor, get_runtime, models
+from .runtimes import (
+    TossCapabilityError, command_for, doctor, extract_tfcode_final, get_runtime,
+    models, runtime_environment, validate_authority, verify_runtime,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -183,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     try:
         runtime = get_runtime(args.runtime)
+        validate_authority(runtime, args.authority)
         cwd_was_supplied = args.cwd is not None
         args.cwd = (args.cwd or Path.cwd()).resolve()
         if args.authority == "write" and not cwd_was_supplied:
@@ -200,13 +204,21 @@ def main(argv: list[str] | None = None) -> int:
             "cwd": str(args.cwd), "scope": resolved_scope,
         }), file=sys.stderr)
         final_path = state_dir() / f"final-{uuid.uuid4().hex}.txt" if runtime.name == "codex" else None
-        output = run(
-            command_for(runtime, authority=args.authority, model=args.model, variant=args.variant, output_file=final_path),
-            prompt, runtime=runtime.name, cwd=args.cwd, timeout=args.timeout, final_path=final_path,
-            on_spool=lambda spool: print(json.dumps({
-                "diagnostic": "recovery_spool", "spool": str(spool),
-            }), file=sys.stderr, flush=True),
-        )
+        with runtime_environment(runtime) as child_env:
+            executable_path = verify_runtime(runtime, env=child_env) if runtime.name == "tfcode" else None
+            output = run(
+                command_for(
+                    runtime, authority=args.authority, model=args.model, variant=args.variant,
+                    output_file=final_path, executable_path=executable_path,
+                ),
+                prompt, runtime=runtime.name, cwd=args.cwd, timeout=args.timeout,
+                env=child_env, final_path=final_path,
+                extract_output=extract_tfcode_final if runtime.name == "tfcode" else None,
+                replace_env=runtime.name == "tfcode",
+                on_spool=lambda spool: print(json.dumps({
+                    "diagnostic": "recovery_spool", "spool": str(spool),
+                }), file=sys.stderr, flush=True),
+            )
         # stdout is intentionally only delegate content: callers can embed it verbatim.
         sys.stdout.write(output)
         return 0

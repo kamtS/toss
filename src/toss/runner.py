@@ -121,6 +121,8 @@ def run(
     argv: list[str], prompt: str, *, runtime: str, cwd: str | Path,
     timeout: float = 120.0, env: dict[str, str] | None = None,
     final_path: Path | None = None,
+    extract_output: Callable[[bytes], str] | None = None,
+    replace_env: bool = False,
     on_spool: Callable[[Path], None] | None = None,
 ) -> str:
     """Run an argv array without a shell and return only a complete final output."""
@@ -133,11 +135,13 @@ def run(
     _spool(spool, b"", False)
     if on_spool is not None:
         on_spool(spool)
-    child_env = os.environ.copy()
-    child_env["TOSS_DEPTH"] = str(depth + 1)
-    child_env["TOSS_UNAVAILABLE"] = "1"
+    # Security-sensitive adapters can supply a complete environment; ordinary
+    # callers retain the convenient overlay behavior.
+    child_env = {} if replace_env else os.environ.copy()
     if env:
         child_env.update(env)
+    child_env["TOSS_DEPTH"] = str(depth + 1)
+    child_env["TOSS_UNAVAILABLE"] = "1"
     try:
         process = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -149,7 +153,7 @@ def run(
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
     totals = {"stdout": 0, "stderr": 0}
-    progress = None if final_path is not None else lambda output, total: _spool(
+    progress = None if final_path is not None or extract_output is not None else lambda output, total: _spool(
         spool, output, False, output_bytes=total,
     )
     stdout_thread = threading.Thread(target=_drain, args=(process.stdout, stdout_buffer, totals, "stdout", MAX_SPOOL, progress), daemon=True)
@@ -246,8 +250,8 @@ def run(
     stdout_truncated = totals["stdout"] > len(stdout)
     stderr_suffix = " [stderr truncated]" if totals["stderr"] > len(stderr) else ""
 
-    saved_output = b"" if final_path is not None else stdout
-    saved_total = 0 if final_path is not None else totals["stdout"]
+    saved_output = b"" if final_path is not None or extract_output is not None else stdout
+    saved_total = 0 if final_path is not None or extract_output is not None else totals["stdout"]
     if timed_out:
         _spool(spool, saved_output, False, output_bytes=saved_total)
         raise TossRunError(runtime, None, "timeout: " + stderr.decode("utf-8", "replace") + stderr_suffix, bool(saved_total), spool)
@@ -278,6 +282,21 @@ def run(
             _spool(spool, final_bytes[:MAX_FINAL], False, output_bytes=final_size)
             raise TossRunError(runtime, process.returncode, f"final output exceeds {MAX_FINAL} byte limit", True, spool)
         final = final_bytes.decode("utf-8", "replace")
+        _spool(spool, final_bytes, True)
+        return final
+    if extract_output is not None:
+        if stdout_truncated:
+            raise TossRunError(runtime, process.returncode, "runtime event stream exceeds spool limit", False, spool)
+        try:
+            final = extract_output(stdout)
+        except (TypeError, ValueError) as exc:
+            raise TossRunError(
+                runtime, process.returncode, f"final-message extraction failed: {exc}", False, spool,
+            ) from exc
+        final_bytes = final.encode("utf-8")
+        if len(final_bytes) > MAX_FINAL:
+            _spool(spool, final_bytes[:MAX_FINAL], False, output_bytes=len(final_bytes))
+            raise TossRunError(runtime, process.returncode, f"final output exceeds {MAX_FINAL} byte limit", True, spool)
         _spool(spool, final_bytes, True)
         return final
     if stdout_truncated:

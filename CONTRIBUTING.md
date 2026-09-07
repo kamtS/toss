@@ -30,6 +30,11 @@ shell command, or consume secrets.
 - Preserve foreground, single-shot behaviour.
 - Put diagnostics on stderr; reserve stdout for the final delegate output.
 - Add tests for refusal paths and recovery behavior, not only happy paths.
+- Runtime contracts tied to a particular binary must exact-gate the audited
+  version and use fake executables in tests; validation must never call a live
+  model.
+- For machine-readable runtimes, parse only the documented final-message shape
+  and fail closed on malformed, unknown, errored, mixed, or empty output.
 - Document safety implications in `docs/security.md` when changing a runtime,
   adapter, spool format, or install path.
 - Do not submit credentials, tokens, real prompts, or captured delegate output.

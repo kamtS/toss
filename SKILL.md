@@ -20,10 +20,12 @@ authority checks, process handling, and output extraction.
   an unambiguous configured alias establishes the route.
 - Recognize common friendly names without claiming account availability:
   `Astra` maps to Codex model `gpt-6-astra`, `Sol 5.6` to
-  `gpt-5.6-sol`, and `Fable 5` to Claude model `fable`. Check other names,
-  including Kimi and Grok variants, with `toss models`; v1 has no live model
-  discovery, so if no safe route is listed, explain the unsupported target
-  instead of guessing.
+  `gpt-5.6-sol`, `Fable 5` to Claude model `fable`, `GLM 5.3` to TF Code
+  model `toothfairyai/glm-5p3`, `GLM 5.3 Flash` to
+  `toothfairyai/glm-5p3-flash`, and `Kimi K3` to `toothfairyai/kimi-k3`.
+  Check other names, including other Kimi and Grok variants, with `toss models`;
+  v1 has no live model discovery, so if no safe route is listed, explain the
+  unsupported target instead of guessing.
 - If the user says only “toss this” with no target, use Codex read-only and say
   which target was selected. The canonical CLI itself still requires an
   explicit runtime.
@@ -40,11 +42,18 @@ Examples of the deterministic calls behind the natural-language gesture:
 ```sh
 toss review codex --model gpt-6-astra --scope auto
 toss to claude --model fable --ro -- "Critique this proposal."
+toss to tfcode --model glm-5.3 --ro -- "Critique this proposal."
+toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions."
+toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
 ```
 
-Do not bypass a capability refusal. In particular, do not add TF Code's
-`--auto` flag or weaken its read-only refusal. Do not expose secrets, private
-runtime state, or unrelated conversation history in the delegated prompt.
+Do not bypass a capability or version refusal. TF Code read-only requires an
+explicitly audited version (currently 2.3.0 or 2.4.0), the verified command
+surface, and tool-free execution; never add `--auto`, `--share`, file or
+session attachment flags, variants, or any other option that broadens its
+pinned command.
+TF Code write is always refused. Do not expose secrets, private runtime state,
+or unrelated conversation history in the delegated prompt.
 
 ## Several reviewers
 

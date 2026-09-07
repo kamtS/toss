@@ -40,6 +40,9 @@ authority:
 ```sh
 toss to codex --model gpt-6-astra --ro -- "Review this design for missing safety constraints."
 toss review codex --ro --base main
+toss to tfcode --model glm-5.3 --ro -- "Review these supplied requirements."
+toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions."
+toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
 ```
 
 With the skill installed, the host agent can turn “have Astra and Fable review
@@ -53,10 +56,23 @@ Current v1 authority contracts are intentionally uneven:
 | --- | --- | --- | --- |
 | Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox and final-message extractor. |
 | Claude | Yes | No | Runs in safe mode with no tools or session persistence; it reviews only supplied text. |
-| TF Code | Refused | Refused | No enforceable non-interactive read-only contract has been verified yet. |
+| TF Code 2.3.0/2.4.0 | Yes, tool-free | Refused | Pinned JSON-mode contract for verified GLM 5.3, GLM 5.3 Flash, and Kimi K3 routes; exact-version and command-surface gated. |
 
-That means Kimi and Grok are not routable in v1 unless a future verified
-runtime contract lists them. Toss reports the unsupported target instead of
+TF Code read-only uses the fixed `build` agent with a deny-all permission map,
+isolated configuration, no project configuration, plugins, external skills,
+Claude prompts, automatic loops, formatting, or sharing. The prompt is sent on
+stdin and only the final completed assistant-message parts from its JSON event
+stream are returned. Missing, malformed, mixed-session, errored, or empty event
+streams fail closed. Variants are refused because they are outside this exact
+audited command. Existing TF Code profile data remains available for
+authentication; the isolated run does not load the user's normal configuration.
+TF Code has no noninteractive no-session-persistence flag, so its normal
+local session history remains in the TF Code data store.
+
+The verified routes are `toothfairyai/glm-5p3`,
+`toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. Other Kimi variants
+and Grok are not routable unless a future audited runtime contract lists them.
+Toss reports the unsupported target instead of
 guessing a route or weakening the boundary. `doctor` does not make a model
 call or test account authentication, and `models` currently reports vetted
 static aliases rather than live provider discovery.
@@ -119,6 +135,9 @@ Source lives at [github.com/kamtS/toss](https://github.com/kamtS/toss).
 - Recovery is an explicit read of an existing result, not a retry.
 - Standard output is reserved for the delegate's final response. Warnings and
   diagnostics go to standard error.
+- TF Code read-only is conditional on an explicitly audited version (currently
+  2.3.0 or 2.4.0) and command surface; other binaries are refused until their
+  command, flags, and event schema are audited.
 
 ## Contributing
 
