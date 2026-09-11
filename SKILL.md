@@ -47,9 +47,8 @@ toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions.
 toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
 ```
 
-Do not bypass a capability or version refusal. TF Code read-only requires an
-explicitly audited version (currently 2.3.0 or 2.4.0), the verified command
-surface, and tool-free execution; never add `--auto`, `--share`, file or
+Do not bypass a capability refusal. TF Code read-only requires the verified
+command surface and tool-free execution; never add `--auto`, `--share`, file or
 session attachment flags, variants, or any other option that broadens its
 pinned command.
 TF Code write is always refused. Do not expose secrets, private runtime state,

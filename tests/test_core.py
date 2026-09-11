@@ -101,13 +101,10 @@ class CoreTests(unittest.TestCase):
             {"runtime": "tfcode", "model": "kimi-k3", "provenance": "known-alias"},
         ])
 
-    def test_tfcode_version_and_command_surface_gate_is_narrow(self):
+    def test_tfcode_command_surface_gate_accepts_any_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for version, accepted in (
-                ("2.3.0", True), ("2.4.0", True), ("2.3.1", False),
-                ("2.4.1", False), ("tfcode 2.4.0", False),
-            ):
+            for version in ("legacy-build", "rolling-build", "tfcode preview"):
                 binary = root / version.replace(" ", "-")
                 binary.write_text(
                     "#!/bin/sh\n"
@@ -118,18 +115,14 @@ class CoreTests(unittest.TestCase):
                 )
                 binary.chmod(0o755)
                 with patch("toss.runtimes.executable", return_value=str(binary)):
-                    if accepted:
-                        self.assertEqual(verify_runtime(get_runtime("tfcode")), str(binary))
-                    else:
-                        with self.assertRaises(TossCapabilityError):
-                            verify_runtime(get_runtime("tfcode"))
+                    self.assertEqual(verify_runtime(get_runtime("tfcode")), str(binary))
 
     def test_tfcode_capability_gate_rejects_changed_command_surface(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "tfcode"
             binary.write_text(
                 "#!/bin/sh\n"
-                "if [ \"$1\" = \"--version\" ]; then echo 2.4.0; else echo '--agent --model'; fi\n"
+                "if [ \"$1\" = \"--version\" ]; then echo ignored; else echo '--agent --model'; fi\n"
             )
             binary.chmod(0o755)
             with patch("toss.runtimes.executable", return_value=str(binary)):
@@ -274,7 +267,7 @@ class CoreTests(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "import json, os, pathlib, sys\n"
                 "if sys.argv[1:] == ['--version']:\n"
-                "    print('2.4.0')\n"
+                "    print('ignored')\n"
                 "    raise SystemExit(0)\n"
                 "if sys.argv[1:] == ['run', '--help']:\n"
                 "    print('--agent --format json --model')\n"
@@ -326,8 +319,6 @@ class CoreTests(unittest.TestCase):
         with patch("toss.runtimes.executable", return_value=None):
             tfcode = next(row for row in doctor() if row["runtime"] == "tfcode")
         self.assertFalse(tfcode["read_only_enforced"])
-        self.assertFalse(tfcode["version_compatible"])
-        self.assertEqual(tfcode["verified_versions"], ["2.3.0", "2.4.0"])
         self.assertFalse(tfcode["capability_compatible"])
 
     def test_cli_requires_an_explicit_runtime(self):

@@ -19,7 +19,7 @@ Toss does not:
 - run unattended loops, schedules, or retries;
 - offer write execution except where a runtime has an explicit, tested write
   authority contract (currently Codex with a user-supplied `--cwd`);
-- offer TF Code write execution or accept an unverified TF Code version.
+- offer TF Code write execution or bypass the TF Code command-surface check.
 
 ## Runtime policy
 
@@ -31,7 +31,7 @@ or `toss review claude`. Only non-delegating inspection commands such as
 runtime's own approval policy. Claude read-only runs with `--safe-mode`, an
 empty tool set, `dontAsk`, and no session persistence; it can assess supplied
 text but cannot inspect the checkout with tools. TF Code read-only is limited
-to explicitly audited versions 2.3.0 and 2.4.0 plus a command-surface check.
+to its audited command-surface check.
 The verified routes are `toothfairyai/glm-5p3`,
 `toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. It runs the
 `build` agent in JSON mode with `OPENCODE_PERMISSION={"*":"deny"}`. Toss
@@ -42,14 +42,14 @@ loops, formatting, and all sharing, and supplies the prompt only on stdin. No
 auto-approval, attachment, continuation, session, command, attach, or variant
 flags are permitted. `--write` is always refused. `OPENCODE_PERMISSION` is an
 audited implementation control but is not exposed in TF Code's public CLI
-help; this is one reason every other version fails closed. TF Code also
+help; this is why an incompatible command surface fails closed. TF Code also
 has no noninteractive no-session-persistence flag, so normal local session
 history remains in its data store. A
 future runtime is not added by renaming an adapter: it needs an explicit, tested
 authority model.
 
 TF Code stdout is an untrusted JSONL event stream, not a final answer. Toss
-accepts only the event types audited for 2.3.0 and 2.4.0, rejects malformed,
+accepts only the audited event types, rejects malformed,
 unknown, error, and mixed-session events, groups completed text parts by
 assistant message ID, and returns only the final non-empty message. Raw or
 partial event streams are never promoted to a complete recovery spool.

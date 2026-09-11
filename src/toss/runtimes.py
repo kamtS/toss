@@ -27,7 +27,6 @@ class Runtime:
     supports_ro: bool
     supports_write: bool
     known_models: tuple[str, ...] = ()
-    verified_versions: tuple[str, ...] = ()
 
 
 RUNTIMES: dict[str, Runtime] = {
@@ -35,12 +34,11 @@ RUNTIMES: dict[str, Runtime] = {
     # Claude read-only delegation is deliberately tool-free.  It can review
     # context supplied in the prompt, but cannot inspect or mutate the checkout.
     "claude": Runtime("claude", "claude", True, False, ("sonnet", "opus", "fable")),
-    # TF Code's contract is pinned because its environment flags and JSON event
-    # schema are part of the read-only boundary, not merely CLI conveniences.
+    # TF Code's command surface and JSON event schema are part of the read-only
+    # boundary, not merely CLI conveniences.
     "tfcode": Runtime(
         "tfcode", "tfcode", True, False,
         ("glm-5.3", "glm-5.3-flash", "kimi-k3"),
-        ("2.3.0", "2.4.0"),
     ),
 }
 
@@ -132,23 +130,6 @@ def verify_runtime(runtime: Runtime, *, env: dict[str, str] | None = None, timeo
     path = executable(runtime)
     if not path:
         raise TossCapabilityError(f"{runtime.name} executable is not installed")
-    if not runtime.verified_versions:
-        return path
-    try:
-        result = subprocess.run(
-            [path, "--version"], capture_output=True, text=True, timeout=timeout,
-            check=False, env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise TossCapabilityError(f"unable to verify {runtime.name} version: {exc}") from exc
-    actual = result.stdout.strip()
-    if result.returncode != 0 or actual not in runtime.verified_versions:
-        shown = actual or result.stderr.strip()[:200] or f"exit {result.returncode}"
-        versions = ", ".join(runtime.verified_versions)
-        raise TossCapabilityError(
-            f"{runtime.name} read-only delegation requires an audited version "
-            f"({versions}); found {shown!r}"
-        )
     if runtime.name == "tfcode":
         try:
             help_result = subprocess.run(
@@ -162,7 +143,7 @@ def verify_runtime(runtime: Runtime, *, env: dict[str, str] | None = None, timeo
         if help_result.returncode != 0 or missing:
             detail = ", ".join(missing) or f"exit {help_result.returncode}"
             raise TossCapabilityError(
-                f"tfcode {actual} does not expose the audited read-only command surface; "
+                "tfcode does not expose the audited read-only command surface; "
                 f"missing: {detail}"
             )
     return path
@@ -284,14 +265,12 @@ def doctor(timeout: float = 3.0) -> list[dict[str, object]]:
             "authentication": "not_checked",
             "model_discovery": "static_aliases" if runtime.known_models else "unavailable",
         }
-        if runtime.verified_versions:
-            item["verified_versions"] = list(runtime.verified_versions)
-            item["version_compatible"] = False
+        if runtime.name == "tfcode":
             item["capability_compatible"] = False
             item["read_only_enforced"] = False
         if path:
             try:
-                if runtime.verified_versions:
+                if runtime.name == "tfcode":
                     verified_path = verify_runtime(runtime, timeout=timeout)
                     version = subprocess.run(
                         [verified_path, "--version"], capture_output=True, text=True,
@@ -299,7 +278,6 @@ def doctor(timeout: float = 3.0) -> list[dict[str, object]]:
                     )
                     actual = version.stdout.strip()
                     item["version"] = (actual or version.stderr).strip()[:200]
-                    item["version_compatible"] = actual in runtime.verified_versions
                     item["capability_compatible"] = True
                     item["read_only_enforced"] = runtime.supports_ro
                 else:
@@ -310,9 +288,8 @@ def doctor(timeout: float = 3.0) -> list[dict[str, object]]:
                     item["version"] = (version.stdout or version.stderr).strip()[:200]
             except (OSError, subprocess.TimeoutExpired, TossCapabilityError) as exc:
                 item["version"] = "unavailable"
-                if runtime.verified_versions:
+                if runtime.name == "tfcode":
                     item["compatibility_error"] = str(exc)
-                    item["version_compatible"] = False
                     item["capability_compatible"] = False
                     item["read_only_enforced"] = False
         result.append(item)

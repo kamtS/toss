@@ -6,9 +6,8 @@ skill. Keep its default path safe:
 - The CLI requires an explicit runtime. The agent skill may choose Codex as the
   disclosed fallback for an otherwise explicit “toss this” request because
   Codex can enforce read-only execution.
-- TF Code read-only is a tool-free contract limited to explicitly audited TF
-  Code versions (currently 2.3.0 and 2.4.0) and a verified command surface:
-  deny all permissions, isolate configuration, disable plugins/skills/prompts,
+- TF Code read-only is a tool-free contract limited to a verified command
+  surface: deny all permissions, isolate configuration, disable plugins/skills/prompts,
   loops, sharing, and formatting, use JSON output, and extract only its final
   assistant message. TF Code write must always refuse.
 - Do not add automatic execution, background jobs, credential handling, shell

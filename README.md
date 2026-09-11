@@ -56,7 +56,7 @@ Current v1 authority contracts are intentionally uneven:
 | --- | --- | --- | --- |
 | Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox and final-message extractor. |
 | Claude | Yes | No | Runs in safe mode with no tools or session persistence; it reviews only supplied text. |
-| TF Code 2.3.0/2.4.0 | Yes, tool-free | Refused | Pinned JSON-mode contract for verified GLM 5.3, GLM 5.3 Flash, and Kimi K3 routes; exact-version and command-surface gated. |
+| TF Code | Yes, tool-free | Refused | Pinned JSON-mode contract for verified GLM 5.3, GLM 5.3 Flash, and Kimi K3 routes; command-surface gated. |
 
 TF Code read-only uses the fixed `build` agent with a deny-all permission map,
 isolated configuration, no project configuration, plugins, external skills,
@@ -135,9 +135,8 @@ Source lives at [github.com/kamtS/toss](https://github.com/kamtS/toss).
 - Recovery is an explicit read of an existing result, not a retry.
 - Standard output is reserved for the delegate's final response. Warnings and
   diagnostics go to standard error.
-- TF Code read-only is conditional on an explicitly audited version (currently
-  2.3.0 or 2.4.0) and command surface; other binaries are refused until their
-  command, flags, and event schema are audited.
+- TF Code read-only is conditional on its audited command surface; binaries
+  that do not expose the required command, flags, and event schema are refused.
 
 ## Contributing
 
