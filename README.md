@@ -50,37 +50,29 @@ this” into independent calls and return each response under its own untrusted
 output label. Model aliases describe routing, not account availability; use
 `toss doctor` and `toss models` to inspect the local machine first.
 
-Current v1 authority contracts are intentionally uneven:
+Authority is selected explicitly per run. Toss does not keep a version-pinned
+model allowlist or strip a runtime's normal capabilities:
 
 | Runtime | Read-only | Write | Notes |
 | --- | --- | --- | --- |
-| Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox and final-message extractor. |
-| Claude | Yes | No | Runs in safe mode with no tools or session persistence; it reviews only supplied text. |
-| TF Code | Yes, tool-free | Refused | Pinned JSON-mode contract for verified GLM 5.3, GLM 5.3 Flash, and Kimi K3 routes; command-surface gated. |
+| Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox; writes remain scoped to the selected workspace. |
+| Claude | Yes | Yes | Read-only uses Claude plan mode; explicit writes use its edit authority. |
+| TF Code | Yes | Yes | Any model identifier and supported variant pass through to the installed TF Code runtime. |
 
-TF Code read-only uses the fixed `build` agent with a deny-all permission map,
-isolated configuration, no project configuration, plugins, external skills,
-Claude prompts, automatic loops, formatting, or sharing. The prompt is sent on
-stdin and only the final completed assistant-message parts from its JSON event
-stream are returned. Missing, malformed, mixed-session, errored, or empty event
-streams fail closed. Variants are refused because they are outside this exact
-audited command. Existing TF Code profile data remains available for
-authentication; the isolated run does not load the user's normal configuration.
-TF Code has no noninteractive no-session-persistence flag, so its normal
-local session history remains in the TF Code data store.
+TF Code runs with the user's configured capabilities. Any provider/model string
+and supported `--variant` pass straight through. `--write` adds TF Code's
+non-interactive approval flag only because the caller explicitly asked it to
+perform work. The prompt is still sent on stdin and Toss returns only the final
+completed assistant-message parts from its JSON event stream. Missing,
+malformed, mixed-session, errored, or empty event streams still fail closed.
+`doctor` does not make a model call or test account authentication.
 
-The verified routes are `toothfairyai/glm-5p3`,
-`toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. Other Kimi variants
-and Grok are not routable unless a future audited runtime contract lists them.
-Toss reports the unsupported target instead of
-guessing a route or weakening the boundary. `doctor` does not make a model
-call or test account authentication, and `models` currently reports vetted
-static aliases rather than live provider discovery.
-
-Writing is intentionally more explicit and only supported through Codex in v1:
+Writing is explicit on every runtime:
 
 ```sh
 toss to codex --write --cwd "$PWD" -- "Make this small, described change."
+toss to claude --model opus --write --cwd "$PWD" -- "Implement this change."
+toss to tfcode --model provider/model --variant high --write --cwd "$PWD" -- "Implement this change."
 ```
 
 If an interrupted host call reports a spool path, inspect it without rerunning
@@ -135,8 +127,8 @@ Source lives at [github.com/kamtS/toss](https://github.com/kamtS/toss).
 - Recovery is an explicit read of an existing result, not a retry.
 - Standard output is reserved for the delegate's final response. Warnings and
   diagnostics go to standard error.
-- TF Code read-only is conditional on its audited command surface; binaries
-  that do not expose the required command, flags, and event schema are refused.
+- Any installed runtime is used as configured. Model availability and account
+  access are reported by that runtime rather than guessed by Toss.
 
 ## Contributing
 

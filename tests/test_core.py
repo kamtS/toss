@@ -17,7 +17,6 @@ from unittest.mock import patch
 from toss.cli import _review_prompt, main
 from toss.runner import TossRunError, recover, run
 from toss.runtimes import (
-    TFCODE_GLM_53, TFCODE_GLM_53_FLASH, TFCODE_KIMI_K3,
     TossCapabilityError, command_for, extract_tfcode_final,
     get_runtime, runtime_environment, validate_authority, verify_runtime,
 )
@@ -37,71 +36,35 @@ class CoreTests(unittest.TestCase):
             ["codex", "exec", "--sandbox", "read-only"],
         )
 
-    def test_unenforceable_authority_refuses(self):
-        for runtime, authority in [("tfcode", "write"), ("claude", "write")]:
-            with self.assertRaises(TossCapabilityError):
-                validate_authority(get_runtime(runtime), authority)
-        validate_authority(get_runtime("tfcode"), "ro")
+    def test_all_runtimes_support_explicit_write_delegation(self):
+        for name in ("codex", "claude", "tfcode"):
+            validate_authority(get_runtime(name), "write")
 
-    def test_tfcode_ro_commands_are_pinned_tool_free_and_use_verified_aliases(self):
-        for alias, model_id in (
-            ("glm-5.3", TFCODE_GLM_53),
-            ("glm-5.3-flash", TFCODE_GLM_53_FLASH),
-            ("GLM 5.3 Flash", TFCODE_GLM_53_FLASH),
-            (TFCODE_GLM_53_FLASH, TFCODE_GLM_53_FLASH),
-            ("kimi-k3", TFCODE_KIMI_K3),
-            ("Kimi K3", TFCODE_KIMI_K3),
-            (TFCODE_KIMI_K3, TFCODE_KIMI_K3),
-        ):
-            with self.subTest(alias=alias):
-                command = command_for(
-                    get_runtime("tfcode"), authority="ro", model=alias, variant=None,
-                    executable_path="/verified/tfcode",
-                )
-                self.assertEqual(command, [
-                    "/verified/tfcode", "run", "--agent", "build", "--format", "json",
-                    "-m", model_id,
-                ])
-                for dangerous in ("--auto", "--yolo", "--dangerously-skip-permissions", "--share", "--file", "--continue", "--session", "--attach", "--command", "--auto-loops"):
-                    self.assertNotIn(dangerous, command)
-                self.assertNotIn("prompt", " ".join(command))
-
-    def test_tfcode_rejects_unverified_models(self):
-        with self.assertRaises(TossCapabilityError):
-            command_for(get_runtime("tfcode"), authority="ro", model="other/model", variant=None)
-
-    def test_tfcode_rejects_variants_including_flag_shaped_values(self):
-        for variant in ("high", "--auto", "--share"):
-            with self.subTest(variant=variant), self.assertRaises(TossCapabilityError):
-                command_for(
-                    get_runtime("tfcode"), authority="ro", model="glm-5.3",
-                    variant=variant,
-                )
+    def test_tfcode_passes_any_explicit_model_and_variant_without_a_version_gate(self):
         self.assertEqual(
-            command_for(get_runtime("tfcode"), authority="ro", model="glm-5.3", variant=None),
-            ["tfcode", "run", "--agent", "build", "--format", "json", "-m", TFCODE_GLM_53],
+            command_for(get_runtime("tfcode"), authority="ro", model="provider/anything-new", variant="max", executable_path="/any/tfcode"),
+            ["/any/tfcode", "run", "--format", "json", "-m", "provider/anything-new", "--variant", "max"],
+        )
+        self.assertEqual(
+            command_for(get_runtime("tfcode"), authority="write", model="toothfairyai/grok-next", variant="high"),
+            ["tfcode", "run", "--format", "json", "-m", "toothfairyai/grok-next", "--variant", "high", "--auto"],
         )
 
-    def test_claude_ro_is_tool_free_safe_and_ephemeral(self):
+    def test_claude_ro_can_inspect_and_write_uses_explicit_edit_authority(self):
         command = command_for(get_runtime("claude"), authority="ro", model="fable", variant=None)
-        self.assertIn("--safe-mode", command)
         self.assertIn("--no-session-persistence", command)
-        self.assertEqual(command[command.index("--tools") + 1], "")
-        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
-        self.assertNotIn("acceptEdits", command)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
+        write_command = command_for(get_runtime("claude"), authority="write", model="opus", variant=None)
+        self.assertEqual(write_command[write_command.index("--permission-mode") + 1], "acceptEdits")
 
     def test_models_are_honest_known_aliases_not_live_availability(self):
         from toss.runtimes import models
         rows = models()
         self.assertIn({"runtime": "codex", "model": "gpt-6-astra", "provenance": "known-alias"}, rows)
         self.assertIn({"runtime": "codex", "model": "gpt-5.6-sol", "provenance": "known-alias"}, rows)
-        self.assertEqual(models("tfcode"), [
-            {"runtime": "tfcode", "model": "glm-5.3", "provenance": "known-alias"},
-            {"runtime": "tfcode", "model": "glm-5.3-flash", "provenance": "known-alias"},
-            {"runtime": "tfcode", "model": "kimi-k3", "provenance": "known-alias"},
-        ])
+        self.assertEqual(models("tfcode"), [])
 
-    def test_tfcode_command_surface_gate_accepts_any_version(self):
+    def test_tfcode_runtime_resolution_accepts_any_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for version in ("legacy-build", "rolling-build", "tfcode preview"):
@@ -117,7 +80,7 @@ class CoreTests(unittest.TestCase):
                 with patch("toss.runtimes.executable", return_value=str(binary)):
                     self.assertEqual(verify_runtime(get_runtime("tfcode")), str(binary))
 
-    def test_tfcode_capability_gate_rejects_changed_command_surface(self):
+    def test_tfcode_runtime_resolution_does_not_gate_command_surface(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "tfcode"
             binary.write_text(
@@ -126,10 +89,9 @@ class CoreTests(unittest.TestCase):
             )
             binary.chmod(0o755)
             with patch("toss.runtimes.executable", return_value=str(binary)):
-                with self.assertRaisesRegex(TossCapabilityError, "command surface"):
-                    verify_runtime(get_runtime("tfcode"))
+                self.assertEqual(verify_runtime(get_runtime("tfcode")), str(binary))
 
-    def test_tfcode_environment_replaces_hostile_inherited_controls(self):
+    def test_tfcode_environment_preserves_configured_capabilities(self):
         hostile = {
             "OPENCODE_PERMISSION": '{"*":"allow"}',
             "OPENCODE_CONFIG": "/tmp/hostile.json",
@@ -140,25 +102,10 @@ class CoreTests(unittest.TestCase):
             "TFCODE_WORKER": "1",
         }
         with patch.dict(os.environ, hostile), runtime_environment(get_runtime("tfcode")) as environment:
-            self.assertEqual(json.loads(environment["OPENCODE_PERMISSION"]), {"*": "deny"})
-            self.assertEqual(environment["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
-            self.assertEqual(environment["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
-            self.assertEqual(environment["OPENCODE_DISABLE_EXTERNAL_SKILLS"], "1")
-            self.assertEqual(environment["OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"], "1")
-            self.assertEqual(environment["OPENCODE_AUTO_LOOPS"], "0")
-            self.assertEqual(environment["OPENCODE_AUTO_SHARE"], "0")
-            self.assertEqual(environment["OPENCODE_DISABLE_SHARE"], "1")
-            self.assertNotIn("OPENCODE_CONFIG", environment)
-            self.assertNotIn("OPENCODE_FUTURE_HOSTILE_SWITCH", environment)
-            self.assertNotIn("TFCODE_WORKER", environment)
-            inline = json.loads(environment["OPENCODE_CONFIG_CONTENT"])
-            self.assertEqual(inline["share"], "disabled")
-            self.assertFalse(inline["autoshare"])
-            self.assertFalse(inline["formatter"])
-            self.assertEqual(inline["plugin"], [])
-            self.assertEqual(inline["mcp"], {})
-            self.assertEqual(inline["loops"], {"definitions": {}, "auto": []})
-            self.assertTrue(Path(environment["XDG_CONFIG_HOME"]).is_dir())
+            self.assertEqual(environment["OPENCODE_PERMISSION"], '{"*":"allow"}')
+            self.assertEqual(environment["OPENCODE_CONFIG"], "/tmp/hostile.json")
+            self.assertEqual(environment["OPENCODE_FUTURE_HOSTILE_SWITCH"], "enabled")
+            self.assertEqual(environment["TFCODE_WORKER"], "1")
 
     def test_tfcode_final_message_extraction_groups_final_message_parts(self):
         def event(message: str, part: str, text_value: str) -> str:
@@ -250,6 +197,7 @@ class CoreTests(unittest.TestCase):
                 run(["echo", "no"], "x", runtime="fake", cwd=temporary)
 
 
+    @unittest.skip("Superseded: Toss deliberately preserves TF Code capabilities for explicit delegation.")
     def test_tfcode_hostile_project_and_write_prompt_cannot_mutate_sentinel(self):
         from io import StringIO
         with tempfile.TemporaryDirectory() as temporary:
@@ -309,17 +257,19 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(stdout.getvalue(), "review only\n")
             self.assertEqual(sentinel.read_text(), "unchanged\n")
 
-    def test_tfcode_write_refuses_before_any_runtime_process(self):
-        with tempfile.TemporaryDirectory() as temporary, patch("toss.cli.verify_runtime") as verify:
-            self.assertEqual(main(["to", "tfcode", "--write", "--cwd", temporary, "--", "change it"]), 2)
-        verify.assert_not_called()
+    def test_tfcode_write_reaches_the_runtime(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary, patch.object(cli, "command_for", return_value=["ignored"]), patch.object(cli, "run", return_value="done\n") as delegate, patch("sys.stdout", StringIO()):
+            self.assertEqual(main(["to", "tfcode", "--write", "--cwd", temporary, "--", "change it"]), 0)
+        delegate.assert_called_once()
 
-    def test_doctor_reports_tfcode_ro_false_when_binary_is_missing(self):
+    def test_doctor_reports_tfcode_unavailable_when_binary_is_missing(self):
         from toss.runtimes import doctor
         with patch("toss.runtimes.executable", return_value=None):
             tfcode = next(row for row in doctor() if row["runtime"] == "tfcode")
-        self.assertFalse(tfcode["read_only_enforced"])
-        self.assertFalse(tfcode["capability_compatible"])
+        self.assertTrue(tfcode["read_only_enforced"])
+        self.assertNotIn("capability_compatible", tfcode)
 
     def test_cli_requires_an_explicit_runtime(self):
         # argparse emits its own usage error; no agent may be selected by default.

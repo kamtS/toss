@@ -17,9 +17,8 @@ Toss does not:
 - execute suggestions returned by a delegate;
 - scrape, store, or forward credentials;
 - run unattended loops, schedules, or retries;
-- offer write execution except where a runtime has an explicit, tested write
-  authority contract (currently Codex with a user-supplied `--cwd`);
-- offer TF Code write execution or bypass the TF Code command-surface check.
+- infer write authority: each write run requires the caller's explicit
+  `--write --cwd` request.
 
 ## Runtime policy
 
@@ -27,26 +26,13 @@ Every CLI delegation requires an explicit runtime, for example `toss to codex`
 or `toss review claude`. Only non-delegating inspection commands such as
 `doctor` and `models` work without a target. The normal safe path is
 `codex --ro`.
-`codex --write` is allowed only with explicit `--cwd`; it does not bypass the
-runtime's own approval policy. Claude read-only runs with `--safe-mode`, an
-empty tool set, `dontAsk`, and no session persistence; it can assess supplied
-text but cannot inspect the checkout with tools. TF Code read-only is limited
-to its audited command-surface check.
-The verified routes are `toothfairyai/glm-5p3`,
-`toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. It runs the
-`build` agent in JSON mode with `OPENCODE_PERMISSION={"*":"deny"}`. Toss
-replaces inherited OpenCode controls, uses empty configuration/home/managed
-configuration roots while preserving normal TF profile data, disables project
-configuration, default plugins, external and Claude skills/prompts, automatic
-loops, formatting, and all sharing, and supplies the prompt only on stdin. No
-auto-approval, attachment, continuation, session, command, attach, or variant
-flags are permitted. `--write` is always refused. `OPENCODE_PERMISSION` is an
-audited implementation control but is not exposed in TF Code's public CLI
-help; this is why an incompatible command surface fails closed. TF Code also
-has no noninteractive no-session-persistence flag, so normal local session
-history remains in its data store. A
-future runtime is not added by renaming an adapter: it needs an explicit, tested
-authority model.
+`--write` is allowed only with explicit `--cwd`. Codex keeps its sandbox,
+Claude uses plan mode for read-only and edit authority for explicit writes, and
+TF Code passes the selected provider/model and variant to the installed CLI.
+Toss does not impose a version gate, static TF Code model allowlist, or a
+tool-stripping environment. Explicit TF Code writes add `--auto` because that
+is its non-interactive approval mechanism. TF Code may retain its normal local
+session history according to its own configuration.
 
 TF Code stdout is an untrusted JSONL event stream, not a final answer. Toss
 accepts only the audited event types, rejects malformed,

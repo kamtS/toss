@@ -23,9 +23,8 @@ authority checks, process handling, and output extraction.
   `gpt-5.6-sol`, `Fable 5` to Claude model `fable`, `GLM 5.3` to TF Code
   model `toothfairyai/glm-5p3`, `GLM 5.3 Flash` to
   `toothfairyai/glm-5p3-flash`, and `Kimi K3` to `toothfairyai/kimi-k3`.
-  Check other names, including other Kimi and Grok variants, with `toss models`;
-  v1 has no live model discovery, so if no safe route is listed, explain the
-  unsupported target instead of guessing.
+  For any other explicit TF Code model, pass its provider/model identifier
+  through unchanged; do not gate it on a static Toss registry.
 - If the user says only “toss this” with no target, use Codex read-only and say
   which target was selected. The canonical CLI itself still requires an
   explicit runtime.
@@ -35,7 +34,7 @@ authority checks, process handling, and output extraction.
 Use `toss review` for repository review and `toss to` for other text tasks.
 Read-only is the default. Never infer write authority from “toss”, “send”,
 “review”, or “ask”. A write run requires the user's explicit implementation
-request and a runtime whose current `toss doctor` capability permits it.
+request; every installed runtime supports this explicit delegation mode.
 
 Examples of the deterministic calls behind the natural-language gesture:
 
@@ -47,12 +46,10 @@ toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions.
 toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
 ```
 
-Do not bypass a capability refusal. TF Code read-only requires the verified
-command surface and tool-free execution; never add `--auto`, `--share`, file or
-session attachment flags, variants, or any other option that broadens its
-pinned command.
-TF Code write is always refused. Do not expose secrets, private runtime state,
-or unrelated conversation history in the delegated prompt.
+Do not add unrelated session, attachment, sharing, or background flags. TF
+Code models and variants are passed through to its installed CLI, and `--auto`
+is used only for an explicit `--write` request. Do not expose secrets, private
+runtime state, or unrelated conversation history in the delegated prompt.
 
 ## Several reviewers
 
