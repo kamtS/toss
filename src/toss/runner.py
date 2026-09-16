@@ -206,9 +206,6 @@ def run(
     try:
         try:
             process.wait(timeout=max(0.0, deadline - time.monotonic()))
-            # Toss is a foreground operation. A direct child may not leave
-            # descendants behind holding pipes or continuing delegated work.
-            terminate_group(signal.SIGTERM)
         except subprocess.TimeoutExpired:
             timed_out = True
             terminate_group(signal.SIGTERM)
@@ -231,6 +228,13 @@ def run(
             stdout_thread.join(max(0.0, cleanup_deadline - time.monotonic()))
             stderr_thread.join(max(0.0, cleanup_deadline - time.monotonic()))
             stdin_thread.join(max(0.0, cleanup_deadline - time.monotonic()))
+        else:
+            # A direct runtime process may hand its JSON event stream to a
+            # child. Keep the foreground run alive until those inherited pipes
+            # close, then clean up descendants which no longer have output to
+            # drain. Killing the group immediately after process.wait() loses
+            # a valid child-produced final message.
+            terminate_group(signal.SIGTERM)
     finally:
         if kill_timer is not None:
             kill_timer.cancel()
