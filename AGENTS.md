@@ -3,13 +3,15 @@
 Toss is a public, foreground-only delegation CLI with a thin agent-facing
 skill. Keep its default path safe:
 
-- The CLI requires an explicit runtime. The agent skill may choose Codex as the
-  disclosed fallback for an otherwise explicit “toss this” request because
-  Codex can enforce read-only execution.
-- TF Code read-only is a tool-free contract limited to a verified command
-  surface: deny all permissions, isolate configuration, disable plugins/skills/prompts,
-  loops, sharing, and formatting, use JSON output, and extract only its final
-  assistant message. TF Code write must always refuse.
+- The CLI requires an explicit runtime. `toss to` grants write authority in the
+  caller's current directory by default, while `toss review` is always
+  read-only. `--ro` is the explicit non-writing mode; `--write` remains an
+  equivalent explicit spelling of the `to` default.
+- TF Code `--ro` selects its `plan` agent without adding `--auto`; this is a
+  runtime policy, not OS-enforced read-only, and may create TF Code plan files.
+  Write mode selects `build --auto`. Preserve the user's TF Code
+  configuration, models, variants, and capabilities rather than maintaining a
+  Toss allowlist or isolated deny-all environment.
 - Do not add automatic execution, background jobs, credential handling, shell
   interpolation, or a pathway that silently expands authority.
 - Core is Python standard library. Keep `SKILL.md` and host adapters thin;

@@ -23,7 +23,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor")
     p_models = commands.add_parser("models")
     p_models.add_argument("runtime", choices=["codex", "claude", "tfcode"], nargs="?")
-    def delegation(name: str) -> argparse.ArgumentParser:
+    def delegation(name: str, *, default_authority: str) -> argparse.ArgumentParser:
         item = commands.add_parser(name)
         # A delegation must name its destination. This prevents surprise model
         # execution and leaves every hand-off visible in shell history.
@@ -33,12 +33,12 @@ def _parser() -> argparse.ArgumentParser:
         authority = item.add_mutually_exclusive_group()
         authority.add_argument("--ro", action="store_const", const="ro", dest="authority")
         authority.add_argument("--write", action="store_const", const="write", dest="authority")
-        item.set_defaults(authority="ro")
+        item.set_defaults(authority=default_authority)
         item.add_argument("--cwd", type=Path)
         item.add_argument("--timeout", type=float, default=120.0)
         return item
-    delegation("to")
-    review = delegation("review")
+    delegation("to", default_authority="write")
+    review = delegation("review", default_authority="ro")
     review.add_argument("--base", default="HEAD")
     review.add_argument("--scope", choices=["auto", "working-tree", "branch"], default="auto")
     recover_parser = commands.add_parser("recover")
@@ -187,10 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runtime = get_runtime(args.runtime)
         validate_authority(runtime, args.authority)
-        cwd_was_supplied = args.cwd is not None
         args.cwd = (args.cwd or Path.cwd()).resolve()
-        if args.authority == "write" and not cwd_was_supplied:
-            raise TossCapabilityError("--write requires an explicit --cwd")
         resolved_scope = None
         if args.command == "review":
             # Review is always read-only regardless of a conflicting flag.

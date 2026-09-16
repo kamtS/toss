@@ -6,11 +6,9 @@ authority expansion; it does not make an arbitrary downstream tool safe.
 ## Threat model and non-goals
 
 Toss assumes a person explicitly requests delegation and supplies a request.
-The CLI never supplies a default runtime or model. The Agent Skill resolves an
-explicitly named target, or discloses Codex read-only when the person says only
-“toss this.” Its job is to keep each request foreground-only, pass arguments without shell
-interpolation, preserve the configured runtime safety mode, and make recovery
-explicit.
+The CLI never supplies a default runtime or model. Its job is to keep each
+request foreground-only, pass arguments without shell interpolation, preserve
+the configured runtime authority mode, and make recovery explicit.
 
 Toss does not:
 
@@ -18,35 +16,37 @@ Toss does not:
 - scrape, store, or forward credentials;
 - run unattended loops, schedules, or retries;
 - offer write execution except where a runtime has an explicit, tested write
-  authority contract (currently Codex with a user-supplied `--cwd`);
-- offer TF Code write execution or bypass the TF Code command-surface check.
+  authority contract;
+- turn a read-only request into TF Code auto-approval.
 
 ## Runtime policy
 
 Every CLI delegation requires an explicit runtime, for example `toss to codex`
 or `toss review claude`. Only non-delegating inspection commands such as
-`doctor` and `models` work without a target. The normal safe path is
-`codex --ro`.
-`codex --write` is allowed only with explicit `--cwd`; it does not bypass the
-runtime's own approval policy. Claude read-only runs with `--safe-mode`, an
+`doctor` and `models` work without a target. `toss to` defaults to write
+authority in the caller's current directory; `--cwd` may select a different
+directory, `--ro` explicitly removes write authority, and `--write` remains a
+backward-compatible explicit spelling. `toss review` defaults to and remains
+read-only, refusing `--write`.
+
+Codex write mode uses `exec --sandbox workspace-write --approve-for-me
+--ephemeral`; read-only keeps the existing `read-only` sandbox. Claude write
+mode uses `--permission-mode acceptEdits --permission-prompts none` without
+safe mode or an empty tool set. Claude read-only runs with `--safe-mode`, an
 empty tool set, `dontAsk`, and no session persistence; it can assess supplied
-text but cannot inspect the checkout with tools. TF Code read-only is limited
-to its audited command-surface check.
-The verified routes are `toothfairyai/glm-5p3`,
-`toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. It runs the
-`build` agent in JSON mode with `OPENCODE_PERMISSION={"*":"deny"}`. Toss
-replaces inherited OpenCode controls, uses empty configuration/home/managed
-configuration roots while preserving normal TF profile data, disables project
-configuration, default plugins, external and Claude skills/prompts, automatic
-loops, formatting, and all sharing, and supplies the prompt only on stdin. No
-auto-approval, attachment, continuation, session, command, attach, or variant
-flags are permitted. `--write` is always refused. `OPENCODE_PERMISSION` is an
-audited implementation control but is not exposed in TF Code's public CLI
-help; this is why an incompatible command surface fails closed. TF Code also
-has no noninteractive no-session-persistence flag, so normal local session
-history remains in its data store. A
-future runtime is not added by renaming an adapter: it needs an explicit, tested
-authority model.
+text but cannot inspect the checkout with tools.
+
+TF Code `--ro` selects `--agent plan` and Toss does not add `--auto`. This is
+not OS-enforced read-only: TF Code uses the person's normal configuration and
+capabilities, and plan mode may create files such as `.tfcode/plans/`. TF Code
+write mode selects `--agent build --auto`. Toss
+does not isolate TF Code configuration, replace its permission map, probe an
+audited command surface, or gate models and variants on a static list. Explicit
+non-empty, non-flag-shaped model and variant values are passed as single
+`--model=<value>` and `--variant=<value>` arguments so they cannot add options.
+The prompt remains on stdin. TF Code may retain normal local session history
+according to its own configuration. A future runtime is not added by renaming
+an adapter: it needs an explicit, tested authority model.
 
 TF Code stdout is an untrusted JSONL event stream, not a final answer. Toss
 accepts only the audited event types, rejects malformed,
