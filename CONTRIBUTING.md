@@ -28,6 +28,8 @@ shell command, or consume secrets.
 ## Change principles
 
 - Preserve foreground, single-shot behaviour.
+- Preserve the command split: `toss to` defaults to write authority in the
+  caller's current directory, while `toss review` remains immutable read-only.
 - Put diagnostics on stderr; reserve stdout for the final delegate output.
 - Add tests for refusal paths and recovery behavior, not only happy paths.
 - Do not impose a static model/variant allowlist or command-surface gate on an

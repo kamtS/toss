@@ -36,12 +36,20 @@ class CoreTests(unittest.TestCase):
             ["codex", "exec", "--sandbox", "read-only"],
         )
 
-    def test_unenforceable_authority_refuses(self):
-        for runtime, authority in [("claude", "write")]:
-            with self.assertRaises(TossCapabilityError):
-                validate_authority(get_runtime(runtime), authority)
-        validate_authority(get_runtime("tfcode"), "ro")
-        validate_authority(get_runtime("tfcode"), "write")
+    def test_all_runtimes_support_explicit_ro_and_write_authority(self):
+        for runtime in ("codex", "claude", "tfcode"):
+            with self.subTest(runtime=runtime):
+                validate_authority(get_runtime(runtime), "ro")
+                validate_authority(get_runtime(runtime), "write")
+
+    def test_codex_write_command_uses_exact_noninteractive_workspace_authority(self):
+        self.assertEqual(
+            command_for(get_runtime("codex"), authority="write", model=None, variant=None),
+            [
+                "codex", "exec", "--sandbox", "workspace-write",
+                "--approve-for-me", "--ephemeral", "-",
+            ],
+        )
 
     def test_tfcode_plan_and_build_commands_pass_arbitrary_safe_options(self):
         self.assertEqual(
@@ -80,6 +88,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
         self.assertNotIn("acceptEdits", command)
+
+    def test_claude_write_uses_exact_noninteractive_edit_authority(self):
+        command = command_for(get_runtime("claude"), authority="write", model="fable", variant=None)
+        self.assertEqual(command, [
+            "claude", "-p", "--output-format", "text", "--no-session-persistence",
+            "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+            "--model", "fable",
+        ])
+        self.assertNotIn("--safe-mode", command)
+        self.assertNotIn("--tools", command)
 
     def test_models_are_honest_known_aliases_not_live_availability(self):
         from toss.runtimes import models
@@ -376,11 +394,83 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(saved["output"], "")
             self.assertFalse(raised.exception.partial_output)
 
-    def test_cli_requires_explicit_cwd_for_write(self):
+    def test_to_defaults_to_write_in_current_directory_for_every_runtime(self):
         from io import StringIO
-        with patch("sys.stderr", StringIO()) as stderr:
-            self.assertEqual(main(["to", "codex", "--write", "--", "change it"]), 2)
-            self.assertIn("explicit --cwd", stderr.getvalue())
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            observed: list[tuple[list[str], str, dict[str, object]]] = []
+
+            def capture(argv, prompt, **kwargs):
+                observed.append((argv, prompt, kwargs))
+                return "done\n"
+
+            for runtime in ("codex", "claude", "tfcode"):
+                with self.subTest(runtime=runtime), patch.object(Path, "cwd", return_value=root), patch.object(cli, "run", side_effect=capture), patch.object(cli, "state_dir", return_value=root), patch.object(cli, "verify_runtime", return_value="/verified/tfcode"), patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+                    self.assertEqual(main(["to", runtime, "--", "change it"]), 0)
+
+            self.assertEqual([call[2]["cwd"] for call in observed], [root, root, root])
+            self.assertEqual([call[1] for call in observed], ["change it"] * 3)
+            codex, claude, tfcode = [call[0] for call in observed]
+            self.assertEqual(codex[:6], [
+                "codex", "exec", "--sandbox", "workspace-write",
+                "--approve-for-me", "--ephemeral",
+            ])
+            self.assertIn("acceptEdits", claude)
+            self.assertNotIn("--safe-mode", claude)
+            self.assertEqual(tfcode[:5], [
+                "/verified/tfcode", "run", "--agent", "build", "--auto",
+            ])
+
+    def test_to_cwd_overrides_current_directory(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            selected = root / "selected"
+            selected.mkdir()
+            observed: dict[str, object] = {}
+
+            def capture(argv, prompt, **kwargs):
+                observed.update(kwargs)
+                return "done\n"
+
+            with patch.object(Path, "cwd", return_value=root), patch.object(cli, "run", side_effect=capture), patch.object(cli, "state_dir", return_value=root), patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+                self.assertEqual(main(["to", "codex", "--cwd", str(selected), "--", "change it"]), 0)
+            self.assertEqual(observed["cwd"], selected)
+
+    def test_to_explicit_ro_overrides_default_write_for_every_runtime(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            commands: list[list[str]] = []
+
+            def capture(argv, prompt, **kwargs):
+                commands.append(argv)
+                return "done\n"
+
+            for runtime in ("codex", "claude", "tfcode"):
+                with self.subTest(runtime=runtime), patch.object(cli, "run", side_effect=capture), patch.object(cli, "state_dir", return_value=root), patch.object(cli, "verify_runtime", return_value="/verified/tfcode"), patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+                    self.assertEqual(main(["to", runtime, "--ro", "--cwd", str(root), "--", "inspect"]), 0)
+
+            codex, claude, tfcode = commands
+            self.assertIn("read-only", codex)
+            self.assertNotIn("--approve-for-me", codex)
+            self.assertIn("--safe-mode", claude)
+            self.assertIn("dontAsk", claude)
+            self.assertEqual(tfcode[1:4], ["run", "--agent", "plan"])
+            self.assertNotIn("--auto", tfcode)
+
+    def test_to_explicit_write_remains_backward_compatible(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            commands: list[list[str]] = []
+            with patch.object(cli, "run", side_effect=lambda argv, *args, **kwargs: commands.append(argv) or "done\n"), patch.object(cli, "state_dir", return_value=root), patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+                self.assertEqual(main(["to", "claude", "--write", "--cwd", str(root), "--", "change it"]), 0)
+            self.assertIn("acceptEdits", commands[0])
 
     def test_recover_never_labels_partial_output_final(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -561,6 +651,18 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch("toss.cli.run") as delegate:
             self.assertEqual(main(["review", "codex", "--write", "--cwd", temporary]), 2)
             delegate.assert_not_called()
+
+    def test_review_defaults_to_read_only_and_cannot_inherit_to_default(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            commands: list[list[str]] = []
+            with patch.object(cli, "_review_prompt", return_value=("review input", "working-tree")), patch.object(cli, "run", side_effect=lambda argv, *args, **kwargs: commands.append(argv) or "done\n"), patch.object(cli, "state_dir", return_value=root), patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+                self.assertEqual(main(["review", "codex", "--cwd", str(root)]), 0)
+            self.assertIn("read-only", commands[0])
+            self.assertNotIn("workspace-write", commands[0])
+            self.assertNotIn("--approve-for-me", commands[0])
 
     def test_resolved_diagnostics_go_only_to_stderr(self):
         from io import StringIO

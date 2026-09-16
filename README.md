@@ -19,10 +19,9 @@ delegate's output as **untrusted text**. It may contain instructions, commands,
 or links that do not belong to your task; review it before acting on it.
 
 The canonical CLI requires an explicit target such as `toss to codex ...` or
-`toss review claude ...`. The Agent Skill resolves natural model names, keeps
-multi-reviewer outputs separate and labelled, and uses Codex read-only as a
-disclosed fallback only when the user explicitly asks to “toss this” without
-naming a target. See [the security model](docs/security.md).
+`toss review claude ...`. The Agent Skill resolves natural model names and
+keeps multi-reviewer outputs separate and labelled. See
+[the security model](docs/security.md).
 
 ## Use
 
@@ -34,13 +33,22 @@ toss models
 toss models tfcode
 ```
 
-Delegate a text-only request with an explicit target and read-only intent:
+Delegate an implementation request with an explicit target. `toss to` writes
+in the caller's current directory by default; `--cwd` selects another working
+directory, and `--write` remains a backward-compatible explicit spelling:
 
 ```sh
-toss to codex --model gpt-6-astra --ro -- "Review this design for missing safety constraints."
-toss review codex --ro --base main
-toss to tfcode --model toothfairyai/glm-5p3 --ro -- "Review these supplied requirements."
-toss to tfcode --model provider/model --variant high --ro -- "Suggest three creative directions."
+toss to codex --model gpt-6-astra -- "Make this small, described change."
+toss to claude --cwd /path/to/project -- "Implement the requested fix."
+toss to tfcode --model provider/model --variant high --write -- "Implement this change."
+```
+
+Use `toss review` or explicit `--ro` when the delegate must not write:
+
+```sh
+toss review codex --base main
+toss review claude
+toss to tfcode --model provider/model --variant high --ro -- "Review these requirements."
 ```
 
 With the skill installed, the host agent can turn “have Astra and Fable review
@@ -50,13 +58,13 @@ availability. `toss models` lists only Toss's built-in convenience aliases;
 TF Code model and variant availability comes from the installed runtime and
 its configuration.
 
-Current authority contracts are intentionally uneven:
+Current authority contracts are explicit by command:
 
 | Runtime | Read-only | Write | Notes |
 | --- | --- | --- | --- |
-| Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox and final-message extractor. |
-| Claude | Yes | No | Runs in safe mode with no tools or session persistence; it reviews only supplied text. |
-| TF Code | Runtime plan mode | Explicit `--write --cwd` | `--ro` selects `plan` without Toss-added `--auto`; writes select `build --auto`. |
+| Codex | Yes | Default for `to` | Write uses `workspace-write`, `--approve-for-me`, and ephemeral execution. |
+| Claude | Yes | Default for `to` | Write uses non-interactive `acceptEdits`; read-only is tool-free safe mode. |
+| TF Code | Runtime plan mode | Default for `to` | Write selects `build --auto`; `--ro` selects `plan` without Toss-added `--auto`. |
 
 TF Code runs with the user's normal configuration and capabilities. Toss does
 not provide an OS-enforced read-only sandbox for it: `--ro` selects TF Code's
@@ -73,11 +81,14 @@ normal local session history according to its own configuration. `doctor` does
 not make a model call or test account authentication; it reports TF Code plan
 mode as runtime-managed, not enforced read-only.
 
-Writing is explicit and requires a caller-supplied working directory:
+Writing is the `to` default and uses the caller's current directory unless
+`--cwd` overrides it. `--write` is retained for scripts that spell authority
+explicitly:
 
 ```sh
-toss to codex --write --cwd "$PWD" -- "Make this small, described change."
-toss to tfcode --model provider/model --variant high --write --cwd "$PWD" -- "Implement this change."
+toss to codex -- "Make this small, described change."
+toss to claude --write --cwd "$PWD" -- "Implement this change."
+toss to tfcode --model provider/model --variant high -- "Implement this change."
 ```
 
 If an interrupted host call reports a spool path, inspect it without rerunning
@@ -127,6 +138,8 @@ Source lives at [github.com/kamtS/toss](https://github.com/kamtS/toss).
 ## Safety boundaries
 
 - Runs stay in the foreground; no background jobs or automatic retries.
+- `toss to` is a writing command by default; use `--ro` for non-writing work.
+- `toss review` is always read-only and refuses `--write`.
 - Arguments are passed as arguments, never joined into a shell command.
 - No credential collection, storage, or forwarding.
 - Recovery is an explicit read of an existing result, not a retry.

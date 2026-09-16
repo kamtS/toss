@@ -26,9 +26,9 @@ class Runtime:
 
 RUNTIMES: dict[str, Runtime] = {
     "codex": Runtime("codex", "codex", True, True, ("gpt-6-astra", "gpt-5.6-sol")),
-    # Claude read-only delegation is deliberately tool-free.  It can review
-    # context supplied in the prompt, but cannot inspect or mutate the checkout.
-    "claude": Runtime("claude", "claude", True, False, ("sonnet", "opus", "fable")),
+    # Claude read-only delegation is deliberately tool-free. Write delegation
+    # uses Claude's non-interactive edit authority in the selected workspace.
+    "claude": Runtime("claude", "claude", True, True, ("sonnet", "opus", "fable")),
     # TF Code authority is expressed through its configured plan/build agents.
     # Plan mode is a runtime policy, not an OS-enforced read-only sandbox.
     "tfcode": Runtime("tfcode", "tfcode", True, True),
@@ -77,7 +77,10 @@ def command_for(
     validate_authority(runtime, authority)
     cmd = [executable_path or runtime.binary]
     if runtime.name == "codex":
-        cmd += ["exec", "--sandbox", "read-only" if authority == "ro" else "workspace-write", "--ephemeral"]
+        cmd += ["exec", "--sandbox", "read-only" if authority == "ro" else "workspace-write"]
+        if authority == "write":
+            cmd.append("--approve-for-me")
+        cmd.append("--ephemeral")
         if model:
             cmd += ["-m", model]
         if output_file:
@@ -85,10 +88,11 @@ def command_for(
         # Codex treats a lone dash as prompt text supplied over stdin.
         cmd.append("-")
     elif runtime.name == "claude":
-        cmd += [
-            "-p", "--output-format", "text", "--no-session-persistence",
-            "--safe-mode", "--tools", "", "--permission-mode", "dontAsk",
-        ]
+        cmd += ["-p", "--output-format", "text", "--no-session-persistence"]
+        if authority == "ro":
+            cmd += ["--safe-mode", "--tools", "", "--permission-mode", "dontAsk"]
+        else:
+            cmd += ["--permission-mode", "acceptEdits", "--permission-prompts", "none"]
         if model:
             cmd += ["--model", model]
     elif runtime.name == "tfcode":
@@ -96,7 +100,7 @@ def command_for(
         variant_option = _tfcode_option("variant", variant)
         cmd += ["run", "--agent", "plan" if authority == "ro" else "build"]
         if authority == "write":
-            # Only an explicit --write request opts into TF Code auto-approval.
+            # Write delegation opts into TF Code's non-interactive build agent.
             cmd.append("--auto")
         cmd += ["--format", "json"]
         if model_option:

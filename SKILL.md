@@ -18,38 +18,32 @@ authority checks, process handling, and output extraction.
 - Preserve every explicitly named reviewer. A runtime name selects that
   runtime. A model name selects a runtime only when the local model registry or
   an unambiguous configured alias establishes the route.
-- Recognize common friendly names without claiming account availability:
-  `Astra` maps to Codex model `gpt-6-astra`, `Sol 5.6` to
-  `gpt-5.6-sol`, `Fable 5` to Claude model `fable`, `GLM 5.3` to TF Code
-  model `toothfairyai/glm-5p3`, `GLM 5.3 Flash` to
-  `toothfairyai/glm-5p3-flash`, and `Kimi K3` to `toothfairyai/kimi-k3`.
-  Pass any other explicit TF Code provider/model identifier through unchanged;
-  Toss does not maintain a TF Code model or variant allowlist.
-- If the user says only “toss this” with no target, use Codex read-only and say
-  which target was selected. The canonical CLI itself still requires an
-  explicit runtime.
+- Resolve friendly model names only from the host's current model registry or
+  an unambiguous configured alias; do not maintain a second routing registry
+  in this skill. Pass explicit provider/model identifiers and variants directly
+  to the selected runtime. The canonical CLI still requires an explicit
+  runtime.
 
 ## Delegate safely
 
 Use `toss review` for repository review and `toss to` for other text tasks.
-Read-only is the default. Never infer write authority from “toss”, “send”,
-“review”, or “ask”. A write run requires the user's explicit implementation
-request and a runtime whose current `toss doctor` capability permits it.
+`toss to` defaults to write authority in the caller's current directory;
+`--cwd` overrides that directory. Use `--ro` when the request is explicitly
+non-writing. `toss review` is always read-only and refuses `--write`.
 
 Examples of the deterministic calls behind the natural-language gesture:
 
 ```sh
 toss review codex --model gpt-6-astra --scope auto
 toss to claude --model fable --ro -- "Critique this proposal."
-toss to tfcode --model toothfairyai/glm-5p3 --ro -- "Critique this proposal."
 toss to tfcode --model provider/model --variant high --ro -- "Suggest three creative directions."
-toss to tfcode --model provider/model --write --cwd "$PWD" -- "Implement this change."
+toss to tfcode --model provider/model --variant high -- "Implement this change."
 ```
 
 Do not bypass a capability refusal. TF Code `--ro` uses its `plan` agent with
 no Toss-added `--auto`; it is runtime-managed, not OS-enforced, and may create
-plan files. TF Code keeps the user's configured capabilities. Only an explicit
-implementation request may use `--write --cwd`, which selects `build --auto`.
+plan files. TF Code keeps the user's configured capabilities. Write mode
+selects `build --auto`.
 Pass explicit model and supported variant values normally, but do not add
 unrequested sharing, attachment, session, or background options. Do not expose
 secrets, private runtime state, or unrelated conversation history in the
