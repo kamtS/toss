@@ -30,9 +30,9 @@ shell command, or consume secrets.
 - Preserve foreground, single-shot behaviour.
 - Put diagnostics on stderr; reserve stdout for the final delegate output.
 - Add tests for refusal paths and recovery behavior, not only happy paths.
-- Runtime contracts tied to a particular binary must gate the audited command
-  surface without pinning a version. Use fake executables in tests; validation
-  must never call a live model.
+- Do not impose a static model/variant allowlist or command-surface gate on an
+  installed runtime. Use fake executables for exact argv and environment tests;
+  validation must never call a live model.
 - For machine-readable runtimes, parse only the documented final-message shape
   and fail closed on malformed, unknown, errored, mixed, or empty output.
 - Document safety implications in `docs/security.md` when changing a runtime,

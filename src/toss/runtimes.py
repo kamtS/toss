@@ -1,8 +1,4 @@
-"""Runtime contracts for Toss.
-
-The contracts are intentionally conservative: a runtime is not selected merely
-because it is installed; it must be able to enforce the authority requested.
-"""
+"""Runtime command construction and capability reporting for Toss."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +7,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 from contextlib import contextmanager
 from typing import Iterable
 
@@ -34,34 +29,10 @@ RUNTIMES: dict[str, Runtime] = {
     # Claude read-only delegation is deliberately tool-free.  It can review
     # context supplied in the prompt, but cannot inspect or mutate the checkout.
     "claude": Runtime("claude", "claude", True, False, ("sonnet", "opus", "fable")),
-    # TF Code's command surface and JSON event schema are part of the read-only
-    # boundary, not merely CLI conveniences.
-    "tfcode": Runtime(
-        "tfcode", "tfcode", True, False,
-        ("glm-5.3", "glm-5.3-flash", "kimi-k3"),
-    ),
+    # TF Code authority is expressed through its configured plan/build agents.
+    # Plan mode is a runtime policy, not an OS-enforced read-only sandbox.
+    "tfcode": Runtime("tfcode", "tfcode", True, True),
 }
-
-
-TFCODE_GLM_53 = "toothfairyai/glm-5p3"
-TFCODE_GLM_53_FLASH = "toothfairyai/glm-5p3-flash"
-TFCODE_KIMI_K3 = "toothfairyai/kimi-k3"
-TFCODE_MODEL_ALIASES = {
-    "glm-5.3": TFCODE_GLM_53,
-    "glm-5p3": TFCODE_GLM_53,
-    TFCODE_GLM_53: TFCODE_GLM_53,
-    "glm 5.3 flash": TFCODE_GLM_53_FLASH,
-    "glm-5.3-flash": TFCODE_GLM_53_FLASH,
-    "glm-5p3-flash": TFCODE_GLM_53_FLASH,
-    TFCODE_GLM_53_FLASH: TFCODE_GLM_53_FLASH,
-    "kimi k3": TFCODE_KIMI_K3,
-    "kimi-k3": TFCODE_KIMI_K3,
-    "k3": TFCODE_KIMI_K3,
-    TFCODE_KIMI_K3: TFCODE_KIMI_K3,
-}
-
-
-TFCODE_REQUIRED_RUN_HELP = ("--agent", "--format", "json", "--model")
 
 
 def get_runtime(name: str) -> Runtime:
@@ -78,14 +49,24 @@ def executable(runtime: Runtime) -> str | None:
 def validate_authority(runtime: Runtime, authority: str) -> None:
     if authority not in {"ro", "write"}:
         raise TossCapabilityError(f"unknown authority: {authority}")
-    if runtime.name == "tfcode" and authority == "write":
-        raise TossCapabilityError("tfcode write delegation is refused")
     if authority == "ro" and not runtime.supports_ro:
         raise TossCapabilityError(
             f"{runtime.name} cannot enforce non-interactive read-only authority; refusing"
         )
     if authority == "write" and not runtime.supports_write:
         raise TossCapabilityError(f"{runtime.name} does not support write delegation")
+
+
+def _tfcode_option(name: str, value: str | None) -> str | None:
+    """Return a safe ``--name=value`` argv item for a user-selected option."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned or cleaned.startswith("-"):
+        raise TossCapabilityError(
+            f"tfcode --{name} requires a non-empty value that does not start with '-'"
+        )
+    return f"--{name}={cleaned}"
 
 
 def command_for(
@@ -111,87 +92,32 @@ def command_for(
         if model:
             cmd += ["--model", model]
     elif runtime.name == "tfcode":
-        if variant is not None:
-            raise TossCapabilityError("tfcode variants are outside the verified read-only contract")
-        requested = (model or "glm-5.3").strip().lower()
-        try:
-            resolved_model = TFCODE_MODEL_ALIASES[requested]
-        except KeyError as exc:
-            raise TossCapabilityError(
-                "tfcode read-only supports only the verified GLM-5.3, "
-                "GLM-5.3-Flash, and Kimi-K3 routes"
-            ) from exc
-        cmd += ["run", "--agent", "build", "--format", "json", "-m", resolved_model]
+        model_option = _tfcode_option("model", model)
+        variant_option = _tfcode_option("variant", variant)
+        cmd += ["run", "--agent", "plan" if authority == "ro" else "build"]
+        if authority == "write":
+            # Only an explicit --write request opts into TF Code auto-approval.
+            cmd.append("--auto")
+        cmd += ["--format", "json"]
+        if model_option:
+            cmd.append(model_option)
+        if variant_option:
+            cmd.append(variant_option)
     return cmd
 
 
 def verify_runtime(runtime: Runtime, *, env: dict[str, str] | None = None, timeout: float = 3.0) -> str:
-    """Resolve the executable and enforce any audited runtime contract."""
+    """Resolve the selected executable without probing a command surface."""
     path = executable(runtime)
     if not path:
         raise TossCapabilityError(f"{runtime.name} executable is not installed")
-    if runtime.name == "tfcode":
-        try:
-            help_result = subprocess.run(
-                [path, "run", "--help"], capture_output=True, text=True,
-                timeout=timeout, check=False, env=env,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise TossCapabilityError(f"unable to verify tfcode run contract: {exc}") from exc
-        help_text = help_result.stdout + "\n" + help_result.stderr
-        missing = [token for token in TFCODE_REQUIRED_RUN_HELP if token not in help_text]
-        if help_result.returncode != 0 or missing:
-            detail = ", ".join(missing) or f"exit {help_result.returncode}"
-            raise TossCapabilityError(
-                "tfcode does not expose the audited read-only command surface; "
-                f"missing: {detail}"
-            )
     return path
 
 
 @contextmanager
 def runtime_environment(runtime: Runtime):
-    """Yield a complete child environment implementing the runtime contract."""
-    if runtime.name != "tfcode":
-        yield os.environ.copy()
-        return
-
-    # Remove inherited OpenCode controls before installing the audited set.
-    # TF_* credentials/profile selection remain available to TF Code itself.
-    clean = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith("OPENCODE_") and key != "TFCODE_WORKER"
-    }
-    with tempfile.TemporaryDirectory(prefix="toss-tfcode-") as temporary:
-        root = Path(temporary)
-        config = root / "config"
-        home = root / "home"
-        managed = root / "managed"
-        adapter = root / "adapter"
-        for directory in (config, home, managed, adapter):
-            directory.mkdir(mode=0o700)
-        clean.update({
-            "XDG_CONFIG_HOME": str(config),
-            "OPENCODE_CONFIG_DIR": str(adapter),
-            "OPENCODE_TEST_HOME": str(home),
-            "OPENCODE_TEST_MANAGED_CONFIG_DIR": str(managed),
-            "OPENCODE_PERMISSION": json.dumps({"*": "deny"}, separators=(",", ":")),
-            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
-            "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
-            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
-            "OPENCODE_AUTO_LOOPS": "0",
-            "OPENCODE_AUTO_SHARE": "0",
-            "OPENCODE_DISABLE_SHARE": "1",
-            "OPENCODE_CONFIG_CONTENT": json.dumps({
-                "share": "disabled", "autoshare": False, "formatter": False,
-                "plugin": [], "instructions": [], "mcp": {},
-                "loops": {"definitions": {}, "auto": []},
-            }, separators=(",", ":")),
-        })
-        yield clean
+    """Pass the user's runtime configuration and capabilities through unchanged."""
+    yield os.environ.copy()
 
 
 def extract_tfcode_final(stdout: bytes) -> str:
@@ -266,32 +192,20 @@ def doctor(timeout: float = 3.0) -> list[dict[str, object]]:
             "model_discovery": "static_aliases" if runtime.known_models else "unavailable",
         }
         if runtime.name == "tfcode":
-            item["capability_compatible"] = False
+            item["model_discovery"] = "runtime_config"
             item["read_only_enforced"] = False
+            item["read_only_mode"] = "runtime_plan_agent"
+            item["read_only_auto_approval"] = False
+            item["write_mode"] = "runtime_build_agent_with_auto_approval"
         if path:
             try:
-                if runtime.name == "tfcode":
-                    verified_path = verify_runtime(runtime, timeout=timeout)
-                    version = subprocess.run(
-                        [verified_path, "--version"], capture_output=True, text=True,
-                        timeout=timeout, check=False,
-                    )
-                    actual = version.stdout.strip()
-                    item["version"] = (actual or version.stderr).strip()[:200]
-                    item["capability_compatible"] = True
-                    item["read_only_enforced"] = runtime.supports_ro
-                else:
-                    version = subprocess.run(
-                        [path, "--version"], capture_output=True, text=True,
-                        timeout=timeout, check=False,
-                    )
-                    item["version"] = (version.stdout or version.stderr).strip()[:200]
+                version = subprocess.run(
+                    [path, "--version"], capture_output=True, text=True,
+                    timeout=timeout, check=False,
+                )
+                item["version"] = (version.stdout or version.stderr).strip()[:200]
             except (OSError, subprocess.TimeoutExpired, TossCapabilityError) as exc:
                 item["version"] = "unavailable"
-                if runtime.name == "tfcode":
-                    item["compatibility_error"] = str(exc)
-                    item["capability_compatible"] = False
-                    item["read_only_enforced"] = False
         result.append(item)
     return result
 

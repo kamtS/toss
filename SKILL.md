@@ -23,9 +23,8 @@ authority checks, process handling, and output extraction.
   `gpt-5.6-sol`, `Fable 5` to Claude model `fable`, `GLM 5.3` to TF Code
   model `toothfairyai/glm-5p3`, `GLM 5.3 Flash` to
   `toothfairyai/glm-5p3-flash`, and `Kimi K3` to `toothfairyai/kimi-k3`.
-  Check other names, including other Kimi and Grok variants, with `toss models`;
-  v1 has no live model discovery, so if no safe route is listed, explain the
-  unsupported target instead of guessing.
+  Pass any other explicit TF Code provider/model identifier through unchanged;
+  Toss does not maintain a TF Code model or variant allowlist.
 - If the user says only “toss this” with no target, use Codex read-only and say
   which target was selected. The canonical CLI itself still requires an
   explicit runtime.
@@ -42,17 +41,19 @@ Examples of the deterministic calls behind the natural-language gesture:
 ```sh
 toss review codex --model gpt-6-astra --scope auto
 toss to claude --model fable --ro -- "Critique this proposal."
-toss to tfcode --model glm-5.3 --ro -- "Critique this proposal."
-toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions."
-toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
+toss to tfcode --model toothfairyai/glm-5p3 --ro -- "Critique this proposal."
+toss to tfcode --model provider/model --variant high --ro -- "Suggest three creative directions."
+toss to tfcode --model provider/model --write --cwd "$PWD" -- "Implement this change."
 ```
 
-Do not bypass a capability refusal. TF Code read-only requires the verified
-command surface and tool-free execution; never add `--auto`, `--share`, file or
-session attachment flags, variants, or any other option that broadens its
-pinned command.
-TF Code write is always refused. Do not expose secrets, private runtime state,
-or unrelated conversation history in the delegated prompt.
+Do not bypass a capability refusal. TF Code `--ro` uses its `plan` agent with
+no Toss-added `--auto`; it is runtime-managed, not OS-enforced, and may create
+plan files. TF Code keeps the user's configured capabilities. Only an explicit
+implementation request may use `--write --cwd`, which selects `build --auto`.
+Pass explicit model and supported variant values normally, but do not add
+unrequested sharing, attachment, session, or background options. Do not expose
+secrets, private runtime state, or unrelated conversation history in the
+delegated prompt.
 
 ## Several reviewers
 

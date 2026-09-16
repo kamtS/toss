@@ -34,53 +34,50 @@ toss models
 toss models tfcode
 ```
 
-Delegate a text-only request with an explicit target and enforced read-only
-authority:
+Delegate a text-only request with an explicit target and read-only intent:
 
 ```sh
 toss to codex --model gpt-6-astra --ro -- "Review this design for missing safety constraints."
 toss review codex --ro --base main
-toss to tfcode --model glm-5.3 --ro -- "Review these supplied requirements."
-toss to tfcode --model glm-5.3-flash --ro -- "Suggest three creative directions."
-toss to tfcode --model kimi-k3 --ro -- "Independently critique those directions."
+toss to tfcode --model toothfairyai/glm-5p3 --ro -- "Review these supplied requirements."
+toss to tfcode --model provider/model --variant high --ro -- "Suggest three creative directions."
 ```
 
 With the skill installed, the host agent can turn “have Astra and Fable review
 this” into independent calls and return each response under its own untrusted
-output label. Model aliases describe routing, not account availability; use
-`toss doctor` and `toss models` to inspect the local machine first.
+output label. Skill-level friendly names describe routing, not account
+availability. `toss models` lists only Toss's built-in convenience aliases;
+TF Code model and variant availability comes from the installed runtime and
+its configuration.
 
-Current v1 authority contracts are intentionally uneven:
+Current authority contracts are intentionally uneven:
 
 | Runtime | Read-only | Write | Notes |
 | --- | --- | --- | --- |
 | Codex | Yes | Explicit `--write --cwd` | Uses the Codex sandbox and final-message extractor. |
 | Claude | Yes | No | Runs in safe mode with no tools or session persistence; it reviews only supplied text. |
-| TF Code | Yes, tool-free | Refused | Pinned JSON-mode contract for verified GLM 5.3, GLM 5.3 Flash, and Kimi K3 routes; command-surface gated. |
+| TF Code | Runtime plan mode | Explicit `--write --cwd` | `--ro` selects `plan` without Toss-added `--auto`; writes select `build --auto`. |
 
-TF Code read-only uses the fixed `build` agent with a deny-all permission map,
-isolated configuration, no project configuration, plugins, external skills,
-Claude prompts, automatic loops, formatting, or sharing. The prompt is sent on
-stdin and only the final completed assistant-message parts from its JSON event
-stream are returned. Missing, malformed, mixed-session, errored, or empty event
-streams fail closed. Variants are refused because they are outside this exact
-audited command. Existing TF Code profile data remains available for
-authentication; the isolated run does not load the user's normal configuration.
-TF Code has no noninteractive no-session-persistence flag, so its normal
-local session history remains in the TF Code data store.
+TF Code runs with the user's normal configuration and capabilities. Toss does
+not provide an OS-enforced read-only sandbox for it: `--ro` selects TF Code's
+`plan` agent and does not add `--auto`, but the runtime may still create plan
+files such as `.tfcode/plans/` and its configured tools and permissions remain
+authoritative. Any non-empty provider/model identifier and supported variant
+are passed through as single `--model=<value>` and `--variant=<value>` argv
+items; empty or flag-shaped values are refused.
 
-The verified routes are `toothfairyai/glm-5p3`,
-`toothfairyai/glm-5p3-flash`, and `toothfairyai/kimi-k3`. Other Kimi variants
-and Grok are not routable unless a future audited runtime contract lists them.
-Toss reports the unsupported target instead of
-guessing a route or weakening the boundary. `doctor` does not make a model
-call or test account authentication, and `models` currently reports vetted
-static aliases rather than live provider discovery.
+The prompt is sent on stdin and only final completed assistant-message parts
+from TF Code's JSON event stream are returned. Missing, malformed,
+mixed-session, errored, or empty event streams fail closed. TF Code may retain
+normal local session history according to its own configuration. `doctor` does
+not make a model call or test account authentication; it reports TF Code plan
+mode as runtime-managed, not enforced read-only.
 
-Writing is intentionally more explicit and only supported through Codex in v1:
+Writing is explicit and requires a caller-supplied working directory:
 
 ```sh
 toss to codex --write --cwd "$PWD" -- "Make this small, described change."
+toss to tfcode --model provider/model --variant high --write --cwd "$PWD" -- "Implement this change."
 ```
 
 If an interrupted host call reports a spool path, inspect it without rerunning
@@ -135,8 +132,8 @@ Source lives at [github.com/kamtS/toss](https://github.com/kamtS/toss).
 - Recovery is an explicit read of an existing result, not a retry.
 - Standard output is reserved for the delegate's final response. Warnings and
   diagnostics go to standard error.
-- TF Code read-only is conditional on its audited command surface; binaries
-  that do not expose the required command, flags, and event schema are refused.
+- TF Code `--ro` is runtime plan mode without Toss-added auto-approval, not an
+  OS-enforced read-only boundary; review the user's TF Code configuration.
 
 ## Contributing
 
