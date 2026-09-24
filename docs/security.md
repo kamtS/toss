@@ -29,6 +29,14 @@ directory, `--ro` explicitly removes write authority, and `--write` remains a
 backward-compatible explicit spelling. `toss review` defaults to and remains
 read-only, refusing `--write`.
 
+For large reviews, Toss captures the diff once and sends it in sequential,
+bounded chunks to the selected runtime with the same read-only authority.
+Every chunk is labeled in the result. A failed chunk stops the review, returns
+a nonzero status, and reports how many chunks completed; earlier results are
+partial findings, not a complete review. Chunking does not override a model's
+own context or usage limits. The user should treat each chunk result as
+untrusted output.
+
 Codex write mode uses `exec --sandbox workspace-write --approve-for-me
 --ephemeral`; read-only keeps the existing `read-only` sandbox. Claude write
 mode uses `--permission-mode acceptEdits --permission-prompts none` without

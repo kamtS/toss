@@ -46,8 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-MAX_REVIEW_BYTES = 1_000_000
 MAX_UNTRACKED_FILE_BYTES = 200_000
+MAX_REVIEW_CHUNK_BYTES = 500_000
 
 
 def _git(cwd: Path, args: list[str], *, text: bool = True) -> subprocess.CompletedProcess:
@@ -137,14 +137,85 @@ def _review_prompt(args: argparse.Namespace) -> tuple[str, str]:
     else:
         merge_base = _require_git(root, ["merge-base", base, "HEAD"], "review base and HEAD have no merge base").stdout.strip()
         diff = _require_git(root, ["diff", "--no-ext-diff", "--no-textconv", "--binary", merge_base, "HEAD", "--"], "unable to build branch review diff").stdout
-    encoded = diff.encode("utf-8")
     if not diff.strip():
         raise TossCapabilityError(
             f"review scope {resolved_scope!r} has no changes; choose a meaningful --base or working tree"
         )
-    if len(encoded) > MAX_REVIEW_BYTES:
-        raise TossCapabilityError(f"review context is too large ({len(encoded)} bytes; limit {MAX_REVIEW_BYTES})")
     return "Review this change. Identify concrete risks and suggested fixes.\n\n" + diff, resolved_scope
+
+
+def _review_chunks(prompt: str) -> list[str]:
+    """Keep all review text while bounding each delegate's input size."""
+    if len(prompt.encode("utf-8")) <= MAX_REVIEW_CHUNK_BYTES:
+        return [prompt]
+    # Leave space for the label, even for a change with many chunks.
+    body_limit = MAX_REVIEW_CHUNK_BYTES - 1_024
+    pieces: list[tuple[str, str | None, str | None]] = []
+    current: list[str] = []
+    current_bytes = 0
+    current_file: str | None = None
+    current_hunk: str | None = None
+    piece_file: str | None = None
+    piece_hunk: str | None = None
+
+    def flush() -> None:
+        nonlocal current, current_bytes
+        pieces.append(("".join(current), piece_file, piece_hunk))
+        current, current_bytes = [], 0
+
+    for line in prompt.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            current_file, current_hunk = line.rstrip("\n"), None
+        elif line.startswith("@@ "):
+            current_hunk = line.rstrip("\n")
+        elif line.startswith("+++ b/"):
+            current_file = line.rstrip("\n")
+        encoded = line.encode("utf-8")
+        while encoded:
+            remaining = body_limit - current_bytes
+            if remaining == 0:
+                flush()
+                remaining = body_limit
+            if len(encoded) <= remaining:
+                if not current:
+                    piece_file, piece_hunk = current_file, current_hunk
+                current.append(encoded.decode("utf-8"))
+                current_bytes += len(encoded)
+                break
+            # Prefer a line boundary, but a single very long line must also
+            # be included in full. Never split a UTF-8 code point.
+            if current:
+                flush()
+                continue
+            boundary = body_limit
+            while boundary and boundary < len(encoded) and encoded[boundary] & 0xC0 == 0x80:
+                boundary -= 1
+            if not boundary:
+                raise TossCapabilityError("review chunk limit cannot fit one character")
+            piece_file, piece_hunk = current_file, current_hunk
+            current.append(encoded[:boundary].decode("utf-8"))
+            current_bytes = boundary
+            encoded = encoded[boundary:]
+    if current:
+        flush()
+    total = len(pieces)
+    return [
+        f"Review chunk {index}/{total} of one change. This is partial context; "
+        "identify concrete risks in the supplied text and do not claim to have reviewed other chunks.\n"
+        + (f"File context: {file[:120]}\n" if file else "")
+        + (f"Hunk context: {hunk[:80]}\n" if hunk else "")
+        + "\n"
+        + piece
+        for index, (piece, file, hunk) in enumerate(pieces, 1)
+    ]
+
+
+def _format_review_outputs(outputs: list[str], total: int) -> str:
+    return "".join(
+        f"## Review chunk {index}/{total}\n<TOSS_DELEGATE_OUTPUT untrusted=\"true\">\n"
+        f"{output}\n</TOSS_DELEGATE_OUTPUT>\n"
+        for index, output in enumerate(outputs, 1)
+    )
 
 
 def _prompt(args: argparse.Namespace) -> str:
@@ -196,28 +267,41 @@ def main(argv: list[str] | None = None) -> int:
             prompt, resolved_scope = _review_prompt(args)
         else:
             prompt = _prompt(args)
+        prompts = _review_chunks(prompt) if args.command == "review" else [prompt]
         print(json.dumps({
             "diagnostic": "delegation_resolved", "runtime": runtime.name,
-            "cwd": str(args.cwd), "scope": resolved_scope,
+            "cwd": str(args.cwd), "scope": resolved_scope, "chunks": len(prompts),
         }), file=sys.stderr)
-        final_path = state_dir() / f"final-{uuid.uuid4().hex}.txt" if runtime.name == "codex" else None
+        outputs: list[str] = []
         with runtime_environment(runtime) as child_env:
             executable_path = verify_runtime(runtime, env=child_env) if runtime.name == "tfcode" else None
-            output = run(
-                command_for(
-                    runtime, authority=args.authority, model=args.model, variant=args.variant,
-                    output_file=final_path, executable_path=executable_path,
-                ),
-                prompt, runtime=runtime.name, cwd=args.cwd, timeout=args.timeout,
-                env=child_env, final_path=final_path,
-                extract_output=extract_tfcode_final if runtime.name == "tfcode" else None,
-                replace_env=runtime.name == "tfcode",
-                on_spool=lambda spool: print(json.dumps({
-                    "diagnostic": "recovery_spool", "spool": str(spool),
-                }), file=sys.stderr, flush=True),
-            )
+            for index, chunk in enumerate(prompts, 1):
+                final_path = state_dir() / f"final-{uuid.uuid4().hex}.txt" if runtime.name == "codex" else None
+                try:
+                    output = run(
+                        command_for(
+                            runtime, authority=args.authority, model=args.model, variant=args.variant,
+                            output_file=final_path, executable_path=executable_path,
+                        ),
+                        chunk, runtime=runtime.name, cwd=args.cwd, timeout=args.timeout,
+                        env=child_env, final_path=final_path,
+                        extract_output=extract_tfcode_final if runtime.name == "tfcode" else None,
+                        replace_env=runtime.name == "tfcode",
+                        on_spool=lambda spool: print(json.dumps({
+                            "diagnostic": "recovery_spool", "spool": str(spool),
+                        }), file=sys.stderr, flush=True),
+                    )
+                except TossRunError:
+                    if outputs:
+                        sys.stdout.write(_format_review_outputs(outputs, len(prompts)))
+                    print(json.dumps({
+                        "diagnostic": "review_partial", "completed_chunks": len(outputs),
+                        "total_chunks": len(prompts), "failed_chunk": index,
+                    }), file=sys.stderr)
+                    raise
+                outputs.append(output)
         # stdout is intentionally only delegate content: callers can embed it verbatim.
-        sys.stdout.write(output)
+        sys.stdout.write(_format_review_outputs(outputs, len(prompts)) if len(prompts) > 1 else outputs[0])
         return 0
     except TossRunError as exc:
         print(json.dumps(exc.structured()), file=sys.stderr)
