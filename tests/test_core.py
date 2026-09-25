@@ -596,6 +596,69 @@ class CoreTests(unittest.TestCase):
             self.assertIn("new unstaged", prompt)
             self.assertIn("new untracked", prompt)
 
+    def test_review_chunks_large_diff_without_losing_content(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "large.txt").write_text("base\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+            marker = "END OF LARGE REVIEW"
+            (root / "large.txt").write_text("review line\n" * 400_000 + marker + "\n")
+            prompts: list[str] = []
+            with patch.object(cli, "run", side_effect=lambda argv, prompt, **kwargs: prompts.append(prompt) or "reviewed\n"), patch("sys.stdout", StringIO()) as stdout, patch("sys.stderr", StringIO()):
+                self.assertEqual(main(["review", "claude", "--cwd", str(root)]), 0)
+            self.assertGreater(len(prompts), 1)
+            self.assertTrue(all(len(prompt.encode("utf-8")) <= cli.MAX_REVIEW_CHUNK_BYTES for prompt in prompts))
+            for index, prompt in enumerate(prompts, 1):
+                self.assertIn(f"Review chunk {index}/{len(prompts)}", prompt)
+            self.assertIn("File context: +++ b/large.txt", prompts[1])
+            self.assertIn("Hunk context: @@", prompts[1])
+            self.assertEqual(sum(prompt.count("review line") for prompt in prompts), 400_000)
+            self.assertEqual(sum(prompt.count(marker) for prompt in prompts), 1)
+            self.assertEqual(stdout.getvalue().count("reviewed"), len(prompts))
+
+    def test_review_later_chunk_failure_reports_partial_coverage(self):
+        from io import StringIO
+        import toss.cli as cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "large.txt").write_text("base\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+            (root / "large.txt").write_text("review line\n" * 100_000)
+            calls: list[str] = []
+
+            def fail_second_chunk(argv, prompt, **kwargs):
+                calls.append(prompt)
+                if len(calls) == 2:
+                    raise TossRunError("claude", 1, "fake chunk failure", False, root / "fake-spool.json")
+                return "first chunk reviewed\n"
+
+            with patch.object(cli, "run", side_effect=fail_second_chunk), patch("sys.stdout", StringIO()) as stdout, patch("sys.stderr", StringIO()) as stderr:
+                result = main(["review", "claude", "--cwd", str(root)])
+            self.assertNotEqual(result, 0)
+            self.assertEqual(len(calls), 2)
+            self.assertIn("Review chunk 2/", calls[1])
+            self.assertIn("partial", stderr.getvalue().lower())
+            self.assertNotIn("complete review", stdout.getvalue().lower())
+
+    def test_review_chunks_preserve_oversized_unicode_line(self):
+        import toss.cli as cli
+        prompt = "Review this change.\n" + "🌿" * 130_000 + "\nlast line\n"
+        chunks = cli._review_chunks(prompt)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk.encode("utf-8")) <= cli.MAX_REVIEW_CHUNK_BYTES for chunk in chunks))
+        bodies = [chunk.split("\n\n", 1)[1] for chunk in chunks]
+        self.assertEqual("".join(bodies), prompt)
+
     def test_review_auto_uses_branch_when_clean_and_branch_excludes_dirty_files(self):
         import argparse
         with tempfile.TemporaryDirectory() as temporary:
