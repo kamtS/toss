@@ -22,4 +22,12 @@ skill. Keep its default path safe:
 - Run `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v`
   before proposing a source-tree change.
 
+- Stay compatible with Gauntlet Loop without duplicating its runtime machinery
+  (multi-pass routing, worker/critic loops). Toss is single-shot delegation.
+
 Repository-specific product decisions belong in `README.md` and `docs/security.md`.
+
+## Needs the maintainer's approval
+Public releases, paid or live-model execution, runtime credential changes, host
+installs on someone's machine, and any shared-contract change that materially
+affects Gauntlet Loop.
